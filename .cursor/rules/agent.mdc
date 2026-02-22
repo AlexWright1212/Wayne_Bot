@@ -1,0 +1,25 @@
+---
+alwaysApply: true
+---
+
+# Wayne_Bot Agent Guidelines
+
+You are working on **Wayne_Bot**. A personalized LLM chatbot built from scratch, with memory, RAG, email management, subagent orchestration, and Obsidian vault integration.
+
+We follow **spec-driven development**: specifications in `spec/` define what success looks like (overview, user flows, assumptions, success criteria). These specs get implemented through a scoring/testing system, which you then use to iterate and improve. Orchestration files (called overlord_...) in `.cursor/commands/` explain the workflow and how to work towards the spec. These will be key sources of truth for most projects.
+
+**Rule** - if a user asks you to edit a spec or overlord file, you may. otherwise, NEVER edit one on your own. if you want to edit one, you must stop and ask for approval from the user.
+
+## Quick Navigation
+
+- **Project status & context**: See `project.md` for current focus, progress, and goals
+- **File structure & locations**: See `README.md` for an overview of where everything lives
+- **Success criteria & requirements**: See `spec/` for detailed specifications and priorities
+- **Workflow & iteration guide**: See `.cursor/commands/overlord_...md` and related orchestration files for how to run experiments, track results, and make decisions
+
+---
+
+## Strategic Learnings from Past Experiments
+
+These are patterns we've discovered that tend to work well. They're not hard rules, but general guidance:
+

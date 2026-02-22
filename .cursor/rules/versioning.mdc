@@ -1,0 +1,107 @@
+---
+alwaysApply: true
+---
+
+## Git Workflow Rules
+
+**Note** — Specific overlord files or specs may define more specific git workflows. Default to the more specific overlord/spec instructions in case of conflicts.
+
+---
+
+### Core Principles
+
+1. **Never push directly to `main`.** All changes must go through a feature branch first.
+2. **Only push to GitHub upon explicit user request.** Do not push autonomously, even if you have permission to commit locally.
+3. **Do proactively make local commits.** Local commits are cheap, reversible, and provide a clear history of work. Commit frequently as you make meaningful progress — don't wait for user instruction to commit locally.
+
+---
+
+### Branch Workflow (ALWAYS USE — NEVER WORK DIRECTLY ON MAIN)
+
+**Create and switch to a feature branch:**
+```bash
+git checkout -b feature/your-description
+```
+
+**Make changes, then commit to that branch:**
+```bash
+git add -A
+git commit -m "feat: describe what changed"
+```
+
+**When ready to merge (only after user review and approval):**
+```bash
+git checkout main
+git merge feature/your-description
+```
+
+---
+
+### Proactive Local Commits
+
+You SHOULD create local commits regularly as you work. Good commit points include:
+- After completing a meaningful unit of work
+- Before starting a risky or experimental change (so you can roll back)
+- After a passing test or a working proof-of-concept
+- At the end of a session
+
+**Example commit messages:**
+```bash
+git commit -m "feat: add CSV parser for teacher availability"
+git commit -m "fix: handle empty time slots without crashing"
+git commit -m "chore: clean up unused imports in solver"
+git commit -m "exp: try weighted randomization for team assignment"
+```
+
+---
+
+### Pushing to GitHub — Explicit User Request Required
+
+**NEVER push to GitHub unless the user explicitly asks.** Even on a feature branch.
+
+**WRONG (do not do autonomously):**
+```bash
+git push origin feature/my-change   # ❌ Not without user asking
+git push origin main                # ❌ Never push directly to main
+```
+
+**RIGHT:**
+- User says "push this to GitHub" or "push to origin" → then you may push the current branch
+- User says "push to main" → warn them, suggest merging from a branch instead, then do it only if they confirm
+
+---
+
+### Viewing State
+
+```bash
+git status            # What files changed
+git diff              # Content differences
+git log --oneline -10 # Recent commits
+git branch -a         # All branches
+git tag -l            # All tags
+```
+
+---
+
+### Tagging Experiments (Optional)
+
+If your project uses experiment tracking (see overlord files), tag meaningful states:
+
+```bash
+git tag exp_01        # Tag current commit
+git tag -l "exp_*"   # List all experiment tags
+git checkout exp_01   # Restore a tagged state
+git checkout main     # Return to latest
+```
+
+---
+
+### Summary of Rules
+
+| Action | Allowed | Notes |
+|--------|---------|-------|
+| Local commits on feature branch | YES — proactively | Commit often |
+| Local commits on main | Avoid | Use branches instead |
+| Push to feature branch on GitHub | Only on user request | Never autonomous |
+| Push to main on GitHub | Never | Warn user if asked |
+| Merge feature → main locally | Only on user request | After review |

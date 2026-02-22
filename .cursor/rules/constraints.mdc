@@ -1,0 +1,81 @@
+---
+alwaysApply: true
+---
+
+# Environment Constraints & Command Syntax
+
+You are operating in a **PowerShell** environment on Windows. These constraints will save you time and prevent execution errors.
+
+## Command Chaining
+
+PowerShell uses semicolons (`;`) instead of ampersands (`&&`) for command chaining.
+
+**INCORRECT:**
+```powershell
+git add . && git commit -m "message" && git tag exp_01
+```
+
+**CORRECT:**
+```powershell
+git add .; git commit -m "message"; git tag exp_01
+```
+
+---
+
+## Multi-line Git Commits
+
+PowerShell struggles with Bash-style heredocs and complex quoting for multi-line strings.
+
+**AVOID (will fail in PowerShell):**
+```powershell
+git commit -m "$(cat <<'EOF'
+Multi-line
+message
+here
+EOF
+)"
+```
+
+**USE INSTEAD:**
+
+Option 1 - Single line:
+```powershell
+git commit -m "Brief description of changes"
+```
+
+Option 2 - Multiple `-m` flags:
+```powershell
+git commit -m "Feature: Title" -m "Description line 1" -m "Description line 2"
+```
+
+---
+
+## Python Execution & UTF-8 Output
+
+Some Python scripts output UTF-8 characters (checkmarks ✓, progress bars, unicode symbols).
+
+**What might happen:** You'll see encoding errors like `UnicodeEncodeError: 'charmap' codec can't encode character`.
+
+**What to do:** Ignore console errors and read the output files directly. The script usually completes successfully and saves all results to JSON files regardless of the encoding warning.
+
+**Example:**
+```
+UnicodeEncodeError in console output
+→ Check evaluation_results/results_exp_XX.json
+→ Results are there, complete and usable
+```
+
+---
+
+## File Verification
+
+After running experiments or making changes, verify files actually updated:
+
+**PowerShell:**
+```powershell
+Get-ChildItem -Path evaluation_results/ | Sort-Object LastWriteTime -Descending | Select-Object Name, LastWriteTime
+```
+
+This shows you the most recent files and their timestamps, confirming that your run actually saved results.
+
+---
