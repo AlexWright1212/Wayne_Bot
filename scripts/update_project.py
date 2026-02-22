@@ -1,12 +1,16 @@
 """
-update_docs.py
+update_project.py
 
 Appends a session log entry to project.md.
 Includes: UTC timestamp, latest git commit hash/message, and a status update.
 
+This script is narrowly scoped: it only updates project.md.
+For broader doc updates (README, schemas, etc.), use the Cursor command:
+    .cursor/commands/update_docs.md
+
 Usage:
-    python scripts/update_docs.py
-    python scripts/update_docs.py "Fixed the parsing bug and added CSV export"
+    python scripts/update_project.py
+    python scripts/update_project.py "Fixed the parsing bug and added CSV export"
 """
 
 import subprocess

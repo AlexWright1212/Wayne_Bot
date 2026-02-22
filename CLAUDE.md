@@ -20,10 +20,16 @@ This project follows **Spec-Driven Development (SDD)**. The files in `spec/` def
 
 ## Session Logging
 
-At the **end of every work session**, run the following command to log your progress:
+At the **end of every work session**, run the Cursor command:
 
-```bash
-python scripts/update_docs.py
+```
+.cursor/commands/update_docs.md
 ```
 
-This will append the current UTC timestamp, the latest git commit, and a status summary to `project.md`. This keeps the project log up to date and provides continuity across sessions.
+This command orchestrates all end-of-session doc updates. At minimum it will run:
+
+```bash
+python scripts/update_project.py
+```
+
+Which appends the current UTC timestamp, the latest git commit, and a status summary to `project.md`. The `update_docs.md` command also contains placeholders for any other living documents that need to stay current (README, schema docs, API references, etc.).
