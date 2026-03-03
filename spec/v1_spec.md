@@ -63,7 +63,7 @@ The interface follows the established chat application pattern:
 #### Continuing a Chat
 1. User clicks a conversation in the sidebar.
 2. The full message history loads in the main panel.
-3. User sends a new message. The system assembles the context (all messages, or summary + recent messages if rolling summary has been triggered) and sends it to the selected LLM.
+3. User sends a new message. The system assembles the context (all messages, potential summary, system prompt, etc.) and sends it to the selected LLM.
 
 #### Switching Models Mid-Conversation
 1. User changes the model/provider selection in the header.
@@ -87,20 +87,20 @@ The interface follows the established chat application pattern:
 
 #### OpenAI (Direct SDK)
 - **Connection:** OpenAI Python SDK, API key via `.env`
-- **Available models:** GPT-4o, GPT-4o-mini, o1, o3-mini, and future models as released
-- **Reasoning control:** A dropdown with options: none, low, medium, high. Maps to OpenAI's `reasoning_effort` parameter. When a reasoning level is selected, the response may include a concise reasoning summary, which is captured and made available in the visibility layer.
+- **Available models:** GPT-5.2 (flagship reasoning), GPT-5 (default workhorse), GPT-5 mini (cost-efficient mid-tier), GPT-5 nano (cheapest/fastest). Legacy models (GPT-4o, GPT-4o-mini, o3, o4-mini) are not included.
+- **Reasoning control:** A dropdown with options: none, low, medium, high, xhigh. Maps to OpenAI's `reasoning.effort` parameter. When a reasoning level above "none" is selected, concise reasoning summaries can be opted into and are captured for the visibility layer.
 - **Streaming:** Yes, via SSE
 
 #### Anthropic (Direct SDK)
 - **Connection:** Anthropic Python SDK, API key via `.env`
-- **Available models:** Claude Haiku, Sonnet, Opus (current versions)
-- **Reasoning control:** A dropdown with options: off, low, medium, high, adaptive. Maps to Claude's extended thinking feature with `budget_tokens`. "Adaptive" means Claude chooses how much to think, up to the selected maximum. When extended thinking is active, raw reasoning tokens are captured and made available in the visibility layer.
+- **Available models:** Claude Opus 4.6 (top-tier reasoning/coding), Claude Sonnet 4.6 (best balance of cost/performance), Claude Haiku 4.5 (cheapest/fastest).
+- **Reasoning control:** A dropdown with options: off, low, medium, high, adaptive. Maps to Claude's adaptive thinking feature (recommended) or the effort parameter. "Adaptive" means Claude decides how much to think based on problem complexity. When thinking is active, raw reasoning tokens are captured and made available in the visibility layer.
 - **Streaming:** Yes, via SSE
 
 #### OpenRouter (Unified API)
 - **Connection:** OpenRouter API, API key via `.env`
-- **Available models:** Fetched dynamically from OpenRouter's model list API. Primary targets are DeepSeek R1, DeepSeek V3, but any model available on OpenRouter can be selected.
-- **Reasoning control:** Provider-specific behavior. For DeepSeek R1 models, reasoning is baked in (always-on) and raw reasoning output is parsed and captured for the visibility layer. For non-reasoning models (DeepSeek V3, etc.), no reasoning controls are shown.
+- **Available models:** Fetched dynamically from OpenRouter's model list API. Primary targets are DeepSeek R1 (reasoning, always-on CoT) and DeepSeek V3.2 (latest general model), but any model available on OpenRouter can be selected.
+- **Reasoning control:** Provider-specific behavior. For DeepSeek R1 models, reasoning is baked in (always-on) and raw reasoning output is parsed and captured for the visibility layer. For non-reasoning models (DeepSeek V3.2, etc.), no reasoning controls are shown.
 - **Streaming:** Yes, via SSE
 
 ### 3.2 API Key Management
@@ -122,7 +122,7 @@ Several internal operations use a lightweight model rather than the user's selec
 - Auto-titling conversations
 - Search harness plumbing (classifier, query generation, entity extraction, coverage check)
 
-The lightweight model is a single configured choice (e.g., GPT-4o-mini or Claude Haiku). It is not user-selectable in v1 — it is a backend configuration.
+The default lightweight model is **GPT-5 nano** ($0.05/$0.40 per million tokens) — the cheapest and fastest model from OpenAI's current lineup. This always routes through OpenAI regardless of the user's selected chat provider, since it is a backend utility operation. It is not user-selectable in v1 — it is a backend configuration.
 
 ---
 
@@ -134,27 +134,48 @@ Within a single conversation, the message history grows with each exchange. Even
 
 ### 4.2 How It Works
 
-1. **Token counting:** After each model response, the system estimates the total token count of the messages array (system prompt + all messages). Token estimation uses tiktoken for OpenAI models and approximation heuristics for other providers.
+1. **Token counting:** When the user sends a message (before the API call), the system counts the total tokens of the messages array (system prompt + all messages + the new user message) using the counting method appropriate to the currently selected model's provider (see Section 4.3).
 
-2. **Threshold check:** If the estimated token count exceeds **80% of the active model's context window**, a rolling summary is triggered.
+2. **Threshold check:** If the token count exceeds **80% of the active model's context window**, a rolling summary is triggered before user the message is sent to the LLM.
 
 3. **Summary generation:**
    - Calculate 50% of the context window as the "summary budget."
    - Starting from the oldest messages (but always keeping the system prompt), accumulate message pairs (user + assistant) until the next pair would push past the 50% mark.
+   - Note that previous summaries should also be counted as they are sent to the model and contribute to token counts.
    - Send those accumulated messages to the **lightweight model** with instructions to produce a concise summary preserving key facts, decisions, and context.
    - Replace those messages with a single summary message.
 
-4. **Result:** The messages array now contains: system prompt, summary message, and the remaining recent messages — fitting within the model's context window.
+4. **Result:** The messages array now contains: system prompt, summary message, and the remaining recent messages — fitting within the model's context window. The user's new message is then sent to the LLM with the compressed context.
 
-### 4.3 Context Window Sizes
+**Note:** Because the summary check happens at send-time, it is a **blocking operation**. If a summary is triggered, the user experiences a brief delay before their message reaches the LLM. The UI should display a "Compressing conversation history..." indicator during this time.
+
+### 4.3 Token Counting Methods
+
+Three token counting methods are used, one per provider integration:
+
+| Provider | Method | Type | Notes |
+|---|---|---|---|
+| **OpenAI** | `tiktoken` library | Local (no API call) | Exact token count for OpenAI models. Used as the counting method when the active model is an OpenAI model. |
+| **Anthropic** | `messages.count_tokens()` SDK method | API call (network) | Exact token count for Anthropic models. Used as the counting method when the active model is an Anthropic model. |
+| **OpenRouter** | Characters / 3.5 (heuristic) | Local (no API call) | Conservative approximation. Slightly overcounts vs reality, which is safer for the rolling summary threshold. Used when the active model is an OpenRouter model. |
+
+**For the rolling summary check:** Only the counting method matching the active model's provider is used, and it runs synchronously (it must complete before the message is sent).
+
+**For display purposes (visibility layer):** All three counts are computed for every assistant response. The non-active-provider counts run asynchronously and are non-blocking — they populate in the visibility layer after the response is delivered.
+
+### 4.4 Context Window Sizes
 
 The system maintains a lookup table mapping each model to its context window size in tokens. This table is used for threshold calculations. When a model is fetched dynamically from OpenRouter, context window size is obtained from the OpenRouter model metadata.
 
-### 4.4 Model Switching and Summary
+### 4.5 Token Display
 
-If the user switches to a model with a smaller context window mid-conversation, the system checks the threshold immediately. If the current messages exceed 80% of the *new* model's context window, a rolling summary is triggered before the next API call.
+The user can always see three pieces of token information:
 
-### 4.5 Visibility
+1. **All three provider token counts** for the current messages array — how many tokens the current conversation state represents according to OpenAI (tiktoken), Anthropic (count_tokens API), and OpenRouter (heuristic). These are always visible regardless of which model is selected, allowing the user to compare how different tokenizers interpret the same conversation.
+
+2. **Context window utilization for the selected model** — the token count from the matching provider (e.g., tiktoken count if an OpenAI model is selected) displayed as a fraction of the model's context window. For example: `42,381 / 200,000 tokens (21.2%)`. This updates when the user switches models, immediately showing utilization against the new model's context window.
+
+### 4.6 Visibility
 
 Rolling summaries are **not** shown inline in the chat. The user sees a continuous conversation. However, the transparency layer captures and exposes:
 
@@ -169,7 +190,7 @@ Rolling summaries are **not** shown inline in the chat. The user sees a continuo
 
 ### 5.1 Purpose
 
-Wayne can search the web when a user's question requires current or external information. The search is **model-initiated** — the model decides when a search is needed; there is no manual search button. The search process follows a deterministic, multi-step harness that uses a series of targeted LLM calls and Tavily API searches to gather, filter, and synthesize information.
+Wayne can search the web when a user's question requires current or external information. There is no manual search button. Instead, **every user message passes through a lightweight classifier** (Step 1) that determines whether a web search is needed. This classifier uses the lightweight model (GPT-5 nano), so the added latency per message is minimal. If no search is needed, the message proceeds directly to the user's selected chat model. If search is needed, the full harness executes before the chat model responds.
 
 ### 5.2 Search API
 
@@ -230,9 +251,25 @@ The harness is a Python-orchestrated pipeline. Each step is a discrete, logged o
 - **Action:** Call the **user's selected chat model** (not the lightweight model) with instructions to answer the question using only the provided sources, citing inline.
 - **Output:** The final assistant response, grounded in search results with citations.
 
-### 5.4 Harness Visibility
+### 5.4 Search Results in Conversation Context
 
-The transparency layer captures every harness step and streams progress to the UI in real-time as steps complete:
+When the harness completes, the results are integrated into the conversation's message history in a three-part structure:
+
+```
+user: "What are the best JS frameworks in 2026?"
+tool: [cleaned search results as structured JSON/text — the filtered output from Step 5]
+assistant: "Based on my research, here are..."
+```
+
+- The **user message** is the original query.
+- The **tool message** contains the cleaned, filtered search results (post-Step 5). This persists in the messages array and is included in future API calls, so the model has access to the search results for follow-up questions.
+- The **assistant message** is the synthesized answer from Step 7, which is what the user sees in the main chat.
+
+The tool message is not displayed in the main chat interface — it exists only in the messages array (visible in the visibility layer's payload exposure). The full harness trace (all steps, all intermediate LLM calls) is captured separately in the visibility layer.
+
+### 5.5 Harness Visibility
+
+The transparency layer captures every harness step and streams progress to the UI in real-time as steps complete. In addition to the cleaned search results persisted in the conversation context (Section 5.4), the following per-step detail is captured:
 
 | Step | What is exposed |
 |---|---|
@@ -265,10 +302,9 @@ For **every assistant response**, the following is captured and stored:
 - The raw response metadata (finish reason, token usage reported by the API)
 
 #### Token Tracking
-- Estimated input tokens (local estimate)
+- Three provider token counts for the current messages array: OpenAI (tiktoken), Anthropic (count_tokens API), and OpenRouter (characters / 3.5 heuristic)
 - Output tokens (from API response)
-- Running total for the conversation
-- Context window utilization percentage
+- Context window utilization: token count from the active provider shown as a fraction of the selected model's context window
 
 #### Chain of Thought / Reasoning
 - **OpenAI:** Concise reasoning summaries when reasoning effort is set above "none"
@@ -293,6 +329,8 @@ For **every assistant response**, the following is captured and stored:
 The specific UI pattern for accessing visibility data (drawer, panel, modal, expandable sections) is deferred to the implementation/design phase. The backend must make all visibility data available via API endpoints so the frontend can present it however is most effective.
 
 The key requirement is: **every assistant message has associated visibility data, and the user can access it per-message.**
+
+Additionally, **every internal LLM call** (rolling summary, auto-titling, search harness plumbing steps) captures and exposes the full prompt sent to the model and the full response received. The user can inspect exactly what instructions the lightweight model was given for any background operation.
 
 ---
 
@@ -339,9 +377,11 @@ When the search harness is running, the user sees a real-time progress sequence:
 
 Each step's detailed data is available in the visibility layer. The inline chat shows a condensed progress indicator.
 
-### 8.3 Auto-Title and Summary
+### 8.3 Auto-Title
 
-Auto-titling and rolling summary operations run asynchronously — they do not block the user from continuing to use the chat. The sidebar title updates when auto-titling completes. Rolling summary runs after a response is delivered, before the next user message is sent.
+Auto-titling runs asynchronously after the first exchange — it does not block the user from continuing to use the chat. The sidebar title updates when auto-titling completes.
+
+Note: Rolling summary timing is defined in Section 4.2 — it runs synchronously at send-time (blocking) when the token threshold is exceeded.
 
 ---
 
@@ -369,8 +409,9 @@ This section describes *what* is stored, not the exact database schema (which is
 - Belongs to a message (one-to-one with assistant messages)
 - API payload sent (full messages array, parameters)
 - API response metadata (tokens, finish reason)
-- Estimated input tokens
-- Output tokens
+- Three provider token counts (OpenAI via tiktoken, Anthropic via count_tokens, OpenRouter via heuristic)
+- Output tokens (from API response)
+- Context window utilization for the active model
 - Chain of thought / reasoning content (if available)
 - Rolling summary event data (if a summary was triggered for this exchange)
 - Search harness trace (if search was invoked): all step inputs and outputs
@@ -400,7 +441,41 @@ This section describes *what* is stored, not the exact database schema (which is
 
 ---
 
-## 11. Acceptance Criteria
+## 11. Error Handling
+
+### 11.1 API Key Validation
+
+At startup, the backend checks which API keys are present in `.env` (existence check only — no network calls). The UI displays a status indicator per provider in the model selector: a checkmark if a key is configured, a warning icon if no key is present. Providers with no key are still visible in the selector but cannot be used.
+
+On first actual use of a provider, the real API call validates the key. If validation fails (invalid key, expired, revoked), the user sees an error message: "API key for [provider] is invalid. Check your .env file." The provider remains visible but unusable until the key is corrected and the backend is restarted.
+
+### 11.2 Provider API Failures
+
+If a provider's API fails during a chat request (network error, rate limit, server error), the user sees an error message in the chat area indicating the failure. The message is not retried automatically — the user can retry by resending.
+
+### 11.3 OpenRouter Model List Fetch Failure
+
+If the OpenRouter model list cannot be fetched (network error, invalid key), the OpenRouter section of the model selector is grayed out with a message indicating the failure. OpenAI and Anthropic models remain usable.
+
+### 11.4 Tavily Search Failures
+
+If the Tavily API fails during a search harness execution (network error, invalid key, rate limit):
+
+1. The harness retries the failed call **once**.
+2. If the retry also fails, the harness aborts and returns a structured error to the chat model indicating that the search could not be completed.
+3. The chat model then responds to the user's query using only its own knowledge, noting that it was unable to search the web.
+4. The visibility layer captures the full failure trace: which step failed, the error returned, the retry attempt, and the abort decision.
+
+### 11.5 Lightweight Model Failures
+
+If the lightweight model (GPT-5 nano) fails during a rolling summary or auto-titling operation:
+
+- **Rolling summary failure:** The summary is skipped for this turn. The full unsummarized context is sent to the chat model. If this causes a context window overflow, the error is shown to the user with a suggestion to start a new chat.
+- **Auto-titling failure:** The conversation retains its default untitled state. No error is shown to the user.
+
+---
+
+## 12. Acceptance Criteria
 
 Wayne v1 is complete when:
 
@@ -413,7 +488,7 @@ Wayne v1 is complete when:
 7. **Search harness:** When the model determines a web search is needed, the full deterministic harness executes (classify, query gen, search, filter, coverage check, synthesize) with results grounded in sources.
 8. **Real-time harness progress:** Search harness steps appear live in the UI as they complete.
 9. **Visibility — payload exposure:** For any assistant message, the user can inspect the full API payload that was sent and the response metadata.
-10. **Visibility — token tracking:** Input/output token estimates are captured and displayed per message and as a running conversation total.
+10. **Visibility — token tracking:** Three provider token counts (OpenAI via tiktoken, Anthropic via count_tokens API, OpenRouter via heuristic) are captured per message. Context window utilization is displayed for the selected model.
 11. **Visibility — chain of thought:** Reasoning content is captured and displayed when available (Anthropic extended thinking, OpenAI reasoning summaries, DeepSeek R1 reasoning).
 12. **Visibility — rolling summary events:** When a summary is triggered, the event details (what was summarized, the result, token impact) are captured and inspectable.
 13. **Visibility — search harness trace:** All harness steps, LLM calls, and cleaned Tavily results are captured and inspectable.
@@ -422,16 +497,92 @@ Wayne v1 is complete when:
 
 ---
 
-## 12. Tech Stack Summary
+## 13. Testing Requirements
 
-| Layer | Technology |
-|---|---|
-| Frontend | React + TypeScript + Vite |
-| Backend | Python + FastAPI + Poetry |
-| Database | PostgreSQL (local) |
-| Frontend-Backend Communication | REST (CRUD) + WebSocket (streaming) |
-| LLM — OpenAI | OpenAI Python SDK |
-| LLM — Anthropic | Anthropic Python SDK |
-| LLM — OpenRouter | OpenRouter REST API (or compatible SDK) |
-| Search | Tavily Search API |
-| Token Estimation | tiktoken + heuristic approximation |
+### 13.1 Quality Bar
+
+All features defined in the acceptance criteria (Section 12) must have corresponding tests. No feature is considered complete without tests that verify its behavior.
+
+### 13.2 Backend
+
+- All API endpoints must have integration tests.
+- The rolling summary logic (threshold detection, summary generation, context reconstruction) must have unit tests.
+- The search harness must have tests for each step, including the retry/abort flow and error handling paths.
+- LLM provider integrations must be testable with mocked API responses (no real API calls in CI).
+- Target: **80% code coverage** on backend business logic (excluding boilerplate and configuration).
+
+### 13.3 Frontend
+
+- Critical user flows must have tests: starting a chat, sending a message, switching models, renaming/deleting a conversation.
+- WebSocket streaming behavior must be tested (message arrives, renders progressively).
+- No coverage target for v1 — focus on flow coverage over line coverage.
+
+### 13.4 Implementation Details Deferred
+
+Framework choices (pytest, vitest, etc.), directory structure, test commands, mocking strategies, and CI configuration are implementation plan concerns, not spec concerns.
+
+---
+
+## 14. Tech Stack
+
+### 13.1 Version Constraints
+
+| Technology | Minimum Version | Rationale |
+|---|---|---|
+| Python | 3.11+ | Modern typing, asyncio task groups, `tomllib` |
+| Node.js | 20+ | Current LTS, required by Vite and modern tooling |
+| React | 18+ | Hooks, concurrent rendering, Suspense |
+| PostgreSQL | 15+ | JSONB improvements, important for visibility data storage |
+
+### 13.2 Backend
+
+| Layer | Technology | Notes |
+|---|---|---|
+| Framework | **FastAPI** | Async-native, built-in WebSocket support, auto-generated OpenAPI docs |
+| Package management | **Poetry** | Dependency resolution, virtual environments, lockfile |
+| Data validation | **Pydantic v2** | Ships with FastAPI. Validates all API payloads, harness step outputs, LLM responses |
+| ORM | **SQLAlchemy 2.0+** (async) | Async session support via `asyncpg`. Declarative models, relationship management, query building |
+| Database driver | **asyncpg** | Async PostgreSQL driver, used by SQLAlchemy's async engine |
+| Database migrations | **Alembic** | Schema versioning and migration management, integrates with SQLAlchemy models |
+| HTTP client | **httpx** | Async HTTP client for OpenRouter REST API and Tavily API calls |
+| Environment variables | **python-dotenv** | Loads `.env` file at startup, integrates with Pydantic Settings |
+| WebSocket | **FastAPI built-in** | Native WebSocket support, no additional library needed |
+
+### 13.3 Frontend
+
+| Layer | Technology | Notes |
+|---|---|---|
+| Framework | **React + TypeScript** | Component-based UI, strong typing |
+| Build tool | **Vite** | Fast dev server, HMR, optimized builds |
+| UI components | **shadcn/ui** | Copy-paste component library built on Radix UI primitives. AI-friendly (components live in your codebase, not node_modules) |
+| Styling | **Tailwind CSS** | Utility-first CSS, pairs with shadcn/ui. AI generates Tailwind classes effectively |
+| State management | **Zustand** | Lightweight, minimal boilerplate, scales well. Preferred over Redux (too heavy) or Context alone (re-render issues at scale) |
+| WebSocket client | **Native WebSocket API** | No library needed for basic streaming. Reconnection logic handled in a custom hook |
+| HTTP client | **fetch API** (native) | No axios needed for simple REST calls. Can add a thin wrapper for error handling |
+| Markdown rendering | **react-markdown** | For rendering assistant responses with markdown formatting |
+| Code syntax highlighting | **rehype-highlight** or **Shiki** | For code blocks in assistant responses |
+
+### 13.4 LLM Integrations
+
+| Provider | Technology | Notes |
+|---|---|---|
+| OpenAI | **OpenAI Python SDK** (`openai`) | Direct SDK, streaming via SSE |
+| Anthropic | **Anthropic Python SDK** (`anthropic`) | Direct SDK, streaming via SSE |
+| OpenRouter | **httpx** (REST API) | OpenAI-compatible API format, no dedicated SDK needed |
+| Token counting — OpenAI | **tiktoken** | Local, exact token counts |
+| Token counting — Anthropic | **`messages.count_tokens()`** | SDK method, API call |
+| Token counting — OpenRouter | **Characters / 3.5 heuristic** | Local approximation |
+
+### 13.5 External Services
+
+| Service | Technology | Notes |
+|---|---|---|
+| Search | **Tavily Search API** | Called via httpx, API key in `.env` |
+| Database | **PostgreSQL** (local) | Run natively or via Docker |
+
+### 13.6 Communication Pattern
+
+| Channel | Protocol | Usage |
+|---|---|---|
+| CRUD operations | **REST** (HTTP) | Create/read/update/delete conversations, fetch visibility data, model list, config |
+| LLM streaming | **WebSocket** | Token-by-token response streaming, search harness step progress |
