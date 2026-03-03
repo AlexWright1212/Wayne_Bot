@@ -20,4 +20,4 @@ Key facts that are easy to get wrong:
 
 ## Spec-Driven Development
 
-This project uses spec-driven development. The spec in `spec/v1_spec.md` is the contract for what we're building. Implementation plans should reference the spec. Changes to scope require updating the spec first.
+This project uses spec-driven development. The specs in `spec/` should be utilized for building implementation plans and refernced regularly. Implementation plans should reference the spec. Changes to scope require updating the spec first.
