@@ -1,1463 +1,380 @@
-# Unit V — Visibility Layer: Implementation Plan (`plans/v1_06_visibility.md`)
+# Unit V — Visibility Layer + Integration Wiring
+
+**Spec sections:** §6.1–6.3, §4.6, §5.5
+**Consult:** `spec/v1_spec.md`, `plans/v1_master_plan.md` (§3.5 for visibility contract, §3.3 for WS protocol), `docs/llm_models_reference.md`
+
+---
 
 ## Overview
 
-This plan covers the complete implementation of Wayne v1 Unit V — Visibility Layer. This unit creates the service that captures full transparency data for every assistant response, the REST endpoints for querying that data, and the Pydantic schemas for API serialization. The visibility layer records API payloads, token counts from all three providers, reasoning content, rolling summary events, and tool execution traces.
-
-All spec references are to `spec/v1_spec.md` v1.1. Architecture references are to `plans/v1_master_plan.md`.
-
-**Depends on:** Unit F (database, ORM models, config), Unit S (TokenCounter service)
-
-**Completion criteria:**
-1. `VisibilityService.capture()` creates a `visibility_records` row with all fields populated for a given assistant message
-2. The active provider's token count is computed synchronously (blocking) and returned immediately; the other two providers' counts are computed asynchronously via background tasks
-3. `GET /api/messages/{id}/visibility` returns the full visibility record for a message
-4. `GET /api/conversations/{id}/token-counts` returns the latest token counts and context window utilization for a conversation
-5. All three token counting paths (OpenAI/tiktoken, Anthropic/count_tokens, OpenRouter/heuristic) populate correctly
-6. Background token counts update the visibility record after the response is delivered
-7. Integration tests pass: visibility record exists after chat exchange, API endpoints return correct data, async token counts populate
+This unit has two responsibilities: (A) the visibility capture and query system, and (B) wiring all backend subsystems — rolling summary, tool framework, and visibility — into the chat orchestrator. After this unit, the full backend is operational: messages trigger rolling summaries when needed, tool calls execute through the harness with real-time step streaming, and every assistant response has a complete visibility record capturing payloads, token counts, reasoning, summary events, and tool traces.
 
 ---
 
-## Step 1: Create Pydantic Schemas — `schemas/visibility.py`
+## Dependencies
 
-**File:** `src/backend/schemas/visibility.py`
+| Unit | What this unit consumes |
+|------|------------------------|
+| **F** | ORM models (`VisibilityRecord`, `Message`, `Conversation`, `RollingSummary`), `get_db()`, `Settings`, exceptions |
+| **P** | `LLMProvider` protocol, `ProviderRegistry`, `ChatMessage`/`StreamEvent` types (master plan §3.1), model catalog |
+| **C** | `ChatService`, `ConversationService`, `routes/ws.py`, `routes/conversations.py`, WS protocol types |
+| **S** | `TokenCounter`, `RollingSummaryService` (master plan §3.4) |
+| **T** | `ToolFramework`, `ToolResult`, `ToolStep`, `ToolContext` (master plan §3.2) |
 
-These schemas define the API response shapes for visibility endpoints. They cover the full visibility record (per-message) and the conversation-level token counts summary.
+**Files to read before implementing:**
+- `src/backend/services/chat.py` — current orchestrator to modify
+- `src/backend/routes/ws.py` — current WS handler to modify
+- `src/backend/services/token_counter.py` — token counting methods
+- `src/backend/services/rolling_summary.py` — check_and_summarize interface
+- `src/backend/tools/framework.py` — ToolFramework execute_tool_call, get_schemas
+- `src/backend/tools/base.py` — ToolContext, ToolResult, ToolStep
+- `src/backend/providers/base.py` — StreamEvent, ChatMessage, LLMProvider
+- `src/backend/models/visibility.py` — ORM model for visibility_records table
 
-```python
-"""Pydantic schemas for the visibility layer API responses."""
+---
 
-from __future__ import annotations
+## Files to Create
 
-from datetime import datetime
-from uuid import UUID
+- `src/backend/services/visibility.py` — Visibility capture and async token count population
+- `src/backend/routes/visibility.py` — REST endpoints for visibility data
+- `src/backend/schemas/visibility.py` — Request/response schemas for visibility API
 
-from pydantic import BaseModel, ConfigDict, Field
+Test files:
+- `tests/unit/test_visibility_service.py` — Unit tests for capture and async token counting
+- `tests/unit/test_tool_call_subloop.py` — Isolated tests for queue-based tool call sub-loop pattern
+- `tests/integration/test_visibility_api.py` — Integration tests for visibility endpoints
+- `tests/integration/test_full_wiring.py` — End-to-end tests for the complete chat orchestrator
 
+## Files to Modify
 
-class TokenCounts(BaseModel):
-    """Token counts from all three providers for a messages array."""
+- `src/backend/services/chat.py` — Add rolling summary, tool call loop, visibility capture
+- `src/backend/routes/ws.py` — Forward new event types (tool steps, summary events), inject new dependencies
+- `src/backend/main.py` — Register visibility routes, wire up new service dependencies
 
-    openai: int | None = Field(None, description="Token count via tiktoken (OpenAI)")
-    anthropic: int | None = Field(None, description="Token count via Anthropic count_tokens API")
-    openrouter: int | None = Field(None, description="Token count via characters/3.5 heuristic")
+---
 
+## Architecture & Key Decisions
 
-class ContextUtilization(BaseModel):
-    """Context window utilization for the active model."""
+### Two-phase visibility record creation
 
-    active_token_count: int = Field(..., description="Token count from the active provider")
-    context_window_size: int = Field(..., description="Total context window of the active model")
-    utilization_percent: float = Field(
-        ..., description="Percentage of context window used (0-100)"
-    )
-    provider: str = Field(..., description="Which provider's count is the active one")
+The visibility record is created in two stages:
+1. **Synchronous (blocking):** After the assistant response completes, create the record with: request payload, response metadata, active provider token count, reasoning content, summary event, tool trace. The active provider token count is computed synchronously because it's needed for the record.
+2. **Asynchronous (fire-and-forget):** Spawn background tasks for the two non-active provider token counts. These update the record via individual DB writes when they complete. Use `asyncio.create_task` — failures are logged but don't affect the user.
 
+### Tool call loop via asyncio.Queue
 
-class SummaryEventData(BaseModel):
-    """Data captured when a rolling summary is triggered."""
+When the LLM returns a `tool_call` stream event, the chat service must:
+1. Persist the tool_call message
+2. Execute the tool (which streams step progress)
+3. Persist the tool_result message
+4. Feed results back to the LLM for a second stream
 
-    triggered_by_message_id: UUID | None = None
-    summarized_message_ids: list[UUID] = Field(default_factory=list)
-    summary_text: str | None = None
-    tokens_before: int | None = None
-    tokens_after: int | None = None
-    model_used: str | None = None
+The challenge: tool step progress must stream to the client in real-time while the tool executes. Use an `asyncio.Queue` as the bridge:
+- The `on_step` callback pushes `ToolStep` events onto the queue
+- Run tool execution as a concurrent task
+- The chat service's async generator reads from the queue and yields `tool_step` events
+- When execution completes, a sentinel signals the generator to proceed with the LLM's second pass
 
-    model_config = ConfigDict(from_attributes=True)
+### Request payload capture
 
+Before calling `provider.stream_chat()`, serialize the full messages list and parameters into a dict. This is the `request_payload` stored in the visibility record. Include: messages (as dicts), model_id, provider, reasoning_level, tool schemas (if any). Serialize `ChatMessage` objects — don't store ORM models.
 
-class ToolTraceStep(BaseModel):
-    """A single step in a tool execution trace."""
+### Token counts endpoint — returns stored data
 
-    name: str
-    status: str  # "running", "complete", "error"
-    data: dict = Field(default_factory=dict)
-    duration_ms: int = 0
+`GET /api/conversations/{id}/token-counts` returns the three provider token counts and context window utilization from the **most recent** visibility record in the conversation. The frontend already has these counts and uses them to calculate utilization against different model context windows when the user switches models. No live recomputation needed — the counts are captured per-message and the latest ones represent the current conversation state.
 
+### Auto-title visibility enrichment
 
-class ToolTraceData(BaseModel):
-    """Full tool execution trace."""
+Per master plan §4 Unit C: the auto-title LLM call's prompt and response are stored in the `response_metadata` JSONB of the first assistant message's visibility record. After auto-title completes, update the existing visibility record with the title generation details.
 
-    tool_name: str
-    tool_arguments: dict = Field(default_factory=dict)
-    steps: list[ToolTraceStep] = Field(default_factory=list)
-    total_duration_ms: int = 0
+---
 
+## Implementation Steps
 
-class VisibilityResponse(BaseModel):
-    """Full visibility record for a single assistant message.
+### Phase 1 — Visibility Schemas & Service
 
-    Returned by GET /api/messages/{id}/visibility.
-    Maps 1:1 with the visibility_records table.
-    """
+**Step 1: `src/backend/schemas/visibility.py`**
 
-    id: UUID
-    message_id: UUID
+Pydantic response schemas for the visibility API.
+- `VisibilityResponse` — all fields from the `visibility_records` table: request_payload, response_metadata, token counts (all three providers + output), context window size, active token count, reasoning_content, summary_event, tool_trace, created_at
+- `TokenCountsResponse` — three provider counts, output tokens, context_window_size, active_token_count, active_provider, model_id. Include a `utilization` float field (active_token_count / context_window_size).
+- Keep JSONB fields as `dict | None` — the frontend parses them. Don't over-type the internal structure.
 
-    # API payload exposure (spec §6.2)
-    request_payload: dict = Field(
-        ..., description="Complete messages array + parameters sent to the LLM"
-    )
-    response_metadata: dict | None = Field(
-        None, description="Raw response metadata (finish reason, usage, etc.)"
-    )
+**Step 2: `src/backend/services/visibility.py`**
 
-    # Token tracking (spec §6.2)
-    token_counts: TokenCounts
-    output_tokens: int | None = Field(None, description="Output tokens from API response")
-    context_utilization: ContextUtilization | None = None
+Implement `VisibilityService` matching the contract in master plan §3.5.
 
-    # Chain of thought / reasoning (spec §6.2)
-    reasoning_content: str | None = Field(
-        None,
-        description="Reasoning content: OpenAI summaries, Anthropic thinking, DeepSeek R1 CoT",
-    )
+- **Constructor:** Takes `TokenCounter` and `Settings`.
 
-    # Rolling summary event (spec §4.6)
-    summary_event: SummaryEventData | None = Field(
-        None, description="Present only if a rolling summary was triggered for this exchange"
-    )
+- **`capture()` method:**
+  1. Compute the active provider's token count synchronously via `token_counter.count_for_provider()`
+  2. Get context window size via `token_counter.get_context_window()`
+  3. Extract `output_tokens` from `response_metadata` — the provider populates this from the API's usage reporting. The `done` StreamEvent's `metadata` dict contains a `usage` key with `prompt_tokens` and `completion_tokens` (per Unit P's base.py). The chat orchestrator passes this as `response_metadata`. Extract `response_metadata.get("usage", {}).get("completion_tokens")` for `output_tokens`.
+  4. Serialize tool trace: convert `list[ToolStep]` to JSON-serializable dicts
+  5. Serialize summary event: convert `SummaryResult` to a JSON-serializable dict
+  6. Create `VisibilityRecord` ORM object with all synchronous fields
+  7. Flush to DB to get the record ID
+  8. Spawn background tasks for the two non-active provider token counts
+  9. Return the visibility record ID
 
-    # Tool execution trace (spec §5.5)
-    tool_trace: ToolTraceData | None = Field(
-        None, description="Present only if a tool was invoked during this exchange"
-    )
+- **Background token count tasks:**
+  - `_compute_background_token_count(record_id, provider, messages, model_id)` — async function that counts tokens for one non-active provider, then updates the visibility record's corresponding column
+  - Map provider to column: `"openai"` → `tokens_openai`, `"anthropic"` → `tokens_anthropic`, `"openrouter"` → `tokens_openrouter`
+  - Wrap in try/except — log errors, don't propagate. A failed background count is acceptable.
+  - Important: these tasks need their own DB session (the parent session may be closed). Create a new session via `get_db()` within each task.
 
-    created_at: datetime
+- **`get_visibility(message_id, db)` method:** Query visibility record by message_id. Return None if not found (not all messages have visibility — only assistant messages).
 
-    model_config = ConfigDict(from_attributes=True)
+- **`get_latest_token_counts(conversation_id, db)` method:** Query the most recent visibility record for the conversation (join messages table, order by sequence desc, limit 1). Return the token count fields.
 
+- **`update_auto_title_data(message_id, title_prompt, title_response, db)` method:** Update the existing visibility record's `response_metadata` JSONB to include auto-title details. Use JSONB merge, not replacement.
 
-class TokenCountsResponse(BaseModel):
-    """Conversation-level token counts summary.
+**Smoke check:** Import visibility service, instantiate with mocked dependencies, call `capture()` with sample data. Verify record creation.
 
-    Returned by GET /api/conversations/{id}/token-counts.
-    Provides the latest token counts and context utilization for the conversation.
-    """
+### Phase 2 — Visibility Routes
 
-    conversation_id: UUID
-    token_counts: TokenCounts
-    context_utilization: ContextUtilization | None = None
-    message_count: int = Field(..., description="Number of messages in the conversation")
-    last_updated: datetime | None = Field(
-        None, description="Timestamp of the most recent visibility record"
-    )
+**Step 3: `src/backend/routes/visibility.py`**
 
-    model_config = ConfigDict(from_attributes=True)
+Two endpoints matching master plan §3.6:
+
+- `GET /api/messages/{id}/visibility` — returns the full visibility record for an assistant message. 404 if message doesn't exist or has no visibility record.
+- `GET /api/conversations/{id}/token-counts` — returns the latest token counts for a conversation. 404 if conversation has no messages with visibility data.
+
+Standard FastAPI dependency injection for `db` and `VisibilityService`.
+
+**Step 4: Register in `main.py`**
+
+Add the visibility router to the FastAPI app.
+
+**Smoke check:** Start the app, verify the visibility endpoints return 404 for nonexistent IDs (not 500).
+
+### Phase 3 — Chat Orchestrator Wiring
+
+This is the most complex phase. Modify `ChatService.handle_user_message()` to integrate all subsystems.
+
+**Step 5: Modify `src/backend/services/chat.py`**
+
+Expand the `ChatService` constructor to accept: `RollingSummaryService`, `ToolFramework`, `VisibilityService`, `TokenCounter`.
+
+Rewrite `handle_user_message()` to follow this flow:
+
+1. **Persist user message** (unchanged from Unit C)
+2. **Assemble context** — system prompt + conversation messages as `ChatMessage` list
+3. **Rolling summary check** — two-step process to allow the UI indicator to fire before the blocking work:
+   a. Call `token_counter.count_for_provider()` and `token_counter.get_context_window()` to pre-check the threshold
+   b. If `token_count >= threshold * window_size`: yield `summary_started`, then call `rolling_summary_service.check_and_summarize()`, store the `SummaryResult`, yield `summary_complete`, and use the returned compressed messages going forward
+   c. If below threshold: skip directly to step 4 with the unmodified messages
+   - Note: token counting runs twice for exchanges where compression fires (once here, once inside `check_and_summarize`). This is intentional and acceptable — the pre-check is what enables the `summary_started` event to arrive at the client *before* the blocking summary generation begins. Do not try to eliminate the double count by caching; keep the logic simple.
+4. **Prepare tool schemas** — call `tool_framework.get_schemas_for_provider(provider)` if the model supports tools
+5. **Capture request payload** — serialize messages + params before calling the LLM
+6. **Stream LLM response** — call `provider.stream_chat()` with tools if applicable
+7. **Handle stream events in a loop:**
+   - `token` → yield to caller, accumulate content
+   - `reasoning` → yield to caller, accumulate reasoning content
+   - `tool_call` → enter the **tool call sub-loop** (see below)
+   - `done` → exit the stream loop
+   - `error` → yield error event to caller
+8. **Persist assistant message** with accumulated content
+9. **Capture visibility** — call `visibility_service.capture()` with all collected data
+10. **Yield `stream_done`** with message_id, visibility_id, token counts, context utilization
+11. **Fire auto-title** if first exchange (unchanged from Unit C, but also call `visibility_service.update_auto_title_data()` when title completes)
+
+**Tool call sub-loop (step 7 detail):**
+
+The sub-loop uses an `asyncio.Queue` to bridge the tool framework's `on_step` callback and the chat service's async generator. This pattern has several failure modes that must be handled explicitly. The implementer should treat the queue as the **single communication channel** between the background task and the drain loop — all signals (steps, errors, completion) flow through it.
+
+**Three object types on the queue:**
+- `ToolStep` — a normal step event, yielded to the WebSocket client
+- An **error marker** (a distinct object, e.g., a dataclass `ToolTaskError(exception)`) — signals the task failed
+- A **sentinel** (e.g., `None` or a dedicated `_SENTINEL` constant) — signals the task is finished, drain loop should exit
+
+**Sequence of operations on `tool_call`:**
+
+a. Persist the tool_call message (role=tool_call, with tool_name, arguments, tool_call_id)
+b. Yield `tool_call_start` event to the WebSocket client
+c. Create an `asyncio.Queue` for step events
+d. Build `ToolContext` with `user_message`, `conversation_id`, and a `lightweight_complete` closure
+e. Create the background task with a **wrapper function** (see sentinel contract below)
+f. Enter the **drain loop** (see drain loop contract below)
+g. After drain loop exits, **await the task** to surface any uncaught exceptions and ensure cleanup
+h. If the drain loop exited due to an error marker, yield an error event and skip to step (l)
+i. Collect the `ToolResult` from the task's return value
+j. Persist the tool_result message (role=tool_result, content=result.content)
+k. Store the tool trace (`result.trace`) for visibility capture
+l. Append tool_call and tool_result as `ChatMessage` to the messages list
+m. Call `provider.stream_chat()` again with updated messages (LLM's second pass)
+n. Continue the stream event loop for the second pass (this handles the final response)
+
+**Sentinel contract (REQUIRED — not optional defensive code):**
+
+The background task wrapper MUST use `try/finally` to guarantee the sentinel reaches the queue:
+
+```
+async def _run_tool_task(framework, tool_name, args, context, queue):
+    try:
+        result = await framework.execute_tool_call(
+            tool_name, args, context, on_step=queue.put
+        )
+        return result
+    except Exception as exc:
+        await queue.put(ToolTaskError(exc))   # error travels through the queue
+    finally:
+        await queue.put(SENTINEL)             # ALWAYS pushed, success or failure
 ```
 
-**Design notes:**
-- `TokenCounts` is a nested object rather than flat fields so it can be reused in both response schemas.
-- `ContextUtilization` is computed on read from the stored `active_token_count` and `context_window_size` columns.
-- `VisibilityResponse` maps closely to the `visibility_records` ORM model but reshapes the flat columns into nested structures for cleaner API consumption.
-- `SummaryEventData` and `ToolTraceData` mirror the JSONB stored in `summary_event` and `tool_trace` columns.
+Without this, an exception in the tool harness means the sentinel never arrives, the drain loop hangs on `queue.get()` forever, and the WebSocket connection freezes. The `finally` clause is the only thing that makes the drain loop safe.
 
----
+**Important:** `except Exception` is intentional — do NOT change it to `except BaseException`. In Python 3.8+, `asyncio.CancelledError` is a subclass of `BaseException`, not `Exception`, so it passes through the `except` clause unhandled. The `finally` still runs (Python guarantees `finally` executes on any exception including `BaseException`), so the sentinel is always pushed. The result: on cancellation, no `ToolTaskError` marker is placed on the queue — the drain loop sees only the sentinel and exits cleanly, with no error event sent to the WebSocket. This is the correct disconnect behavior. If you broaden the `except` to `BaseException`, cancellation becomes a reported error instead of a silent clean exit.
 
-## Step 2: Create Visibility Service — `services/visibility.py`
+**Drain loop contract:**
 
-**File:** `src/backend/services/visibility.py`
+The drain loop reads from the queue with a **timeout** as a last-resort safety net:
 
-This is the core service. It provides:
-1. `capture()` — called by ChatService after every assistant response to create a visibility record
-2. `get_by_message_id()` — retrieves a visibility record for the API endpoint
-3. `get_conversation_token_counts()` — computes conversation-level token summary
-
-The critical design from the master plan (§7, decision #6): the active provider's token count runs **synchronously** (blocking, needed for rolling summary threshold), while the other two providers' counts run as **async background tasks** (fire-and-forget, non-blocking).
-
-```python
-"""Visibility service — captures and queries transparency data for every assistant response."""
-
-from __future__ import annotations
-
-import asyncio
-import logging
-from typing import TYPE_CHECKING
-from uuid import UUID
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.backend.models.visibility import VisibilityRecord
-from src.backend.models.message import Message
-from src.backend.services.token_counter import TokenCounter
-
-if TYPE_CHECKING:
-    from src.backend.providers.base import ChatMessage
-
-logger = logging.getLogger(__name__)
-
-
-class VisibilityService:
-    """Captures full transparency data for every assistant response.
-
-    Token counting strategy (spec §4.3, master plan §7 decision #6):
-    - The active provider's count is computed synchronously (required for
-      rolling summary threshold checks).
-    - The other two providers' counts are computed asynchronously as
-      background tasks and update the record after the response is delivered.
-    """
-
-    def __init__(self, db: AsyncSession, token_counter: TokenCounter) -> None:
-        self._db = db
-        self._token_counter = token_counter
-
-    async def capture(
-        self,
-        *,
-        message_id: UUID,
-        messages: list[ChatMessage],
-        model_id: str,
-        provider: str,
-        request_payload: dict,
-        response_metadata: dict | None = None,
-        output_tokens: int | None = None,
-        reasoning_content: str | None = None,
-        summary_event: dict | None = None,
-        tool_trace: dict | None = None,
-    ) -> VisibilityRecord:
-        """Create a visibility record for an assistant message.
-
-        Computes the active provider's token count synchronously, then
-        fires background tasks for the other two providers.
-
-        Args:
-            message_id: The assistant message this record belongs to.
-            messages: The full messages array that was sent to the LLM
-                (used for token counting).
-            model_id: The model ID used for this response.
-            provider: The active provider ("openai", "anthropic", "openrouter").
-            request_payload: Complete request sent to the LLM (messages, params, tools).
-            response_metadata: Raw response metadata (finish reason, usage, etc.).
-            output_tokens: Output token count from the API response.
-            reasoning_content: Reasoning/thinking content if available.
-            summary_event: Rolling summary event data if a summary was triggered.
-            tool_trace: Tool execution trace if a tool was invoked.
-
-        Returns:
-            The created VisibilityRecord (with active provider count populated,
-            other counts pending background fill).
-        """
-        # --- Step 1: Compute active provider token count synchronously ---
-        active_count = await self._token_counter.count(
-            messages=messages,
-            provider=provider,
-            model_id=model_id,
-        )
-        context_window = self._token_counter.get_context_window(model_id)
-
-        # Map active count to the correct column
-        tokens_openai: int | None = None
-        tokens_anthropic: int | None = None
-        tokens_openrouter: int | None = None
-
-        if provider == "openai":
-            tokens_openai = active_count
-        elif provider == "anthropic":
-            tokens_anthropic = active_count
-        elif provider == "openrouter":
-            tokens_openrouter = active_count
-
-        # --- Step 2: Create the visibility record ---
-        record = VisibilityRecord(
-            message_id=message_id,
-            request_payload=request_payload,
-            response_metadata=response_metadata,
-            tokens_openai=tokens_openai,
-            tokens_anthropic=tokens_anthropic,
-            tokens_openrouter=tokens_openrouter,
-            output_tokens=output_tokens,
-            context_window_size=context_window,
-            active_token_count=active_count,
-            reasoning_content=reasoning_content,
-            summary_event=summary_event,
-            tool_trace=tool_trace,
-        )
-        self._db.add(record)
-        await self._db.flush()
-
-        # --- Step 3: Fire background tasks for non-active providers ---
-        inactive_providers = [p for p in ("openai", "anthropic", "openrouter") if p != provider]
-        for inactive_provider in inactive_providers:
-            asyncio.create_task(
-                self._fill_background_token_count(
-                    record_id=record.id,
-                    messages=messages,
-                    provider=inactive_provider,
-                    model_id=model_id,
-                ),
-                name=f"token_count_{inactive_provider}_{record.id}",
-            )
-
-        logger.info(
-            "Visibility record created for message %s: active_count=%d, window=%d",
-            message_id,
-            active_count,
-            context_window,
-        )
-        return record
-
-    async def _fill_background_token_count(
-        self,
-        *,
-        record_id: UUID,
-        messages: list[ChatMessage],
-        provider: str,
-        model_id: str,
-    ) -> None:
-        """Background task: compute a non-active provider's token count and update the record.
-
-        This runs as a fire-and-forget asyncio task. It gets its own database
-        session to avoid conflicts with the main request session.
-
-        Args:
-            record_id: The visibility record to update.
-            messages: The messages array to count.
-            provider: Which provider's counting method to use.
-            model_id: The model (used by some counting methods).
-        """
-        from src.backend.database import async_session_factory
-
-        try:
-            count = await self._token_counter.count(
-                messages=messages,
-                provider=provider,
-                model_id=model_id,
-            )
-
-            async with async_session_factory() as session:
-                record = await session.get(VisibilityRecord, record_id)
-                if record is None:
-                    logger.warning(
-                        "Visibility record %s not found for background token count", record_id
-                    )
-                    return
-
-                if provider == "openai":
-                    record.tokens_openai = count
-                elif provider == "anthropic":
-                    record.tokens_anthropic = count
-                elif provider == "openrouter":
-                    record.tokens_openrouter = count
-
-                await session.commit()
-                logger.debug(
-                    "Background token count updated: record=%s, provider=%s, count=%d",
-                    record_id,
-                    provider,
-                    count,
-                )
-        except Exception:
-            logger.exception(
-                "Failed to compute background token count for provider=%s, record=%s",
-                provider,
-                record_id,
-            )
-
-    async def get_by_message_id(self, message_id: UUID) -> VisibilityRecord | None:
-        """Retrieve the visibility record for a given message.
-
-        Args:
-            message_id: The message to look up.
-
-        Returns:
-            The VisibilityRecord, or None if not found.
-        """
-        stmt = select(VisibilityRecord).where(VisibilityRecord.message_id == message_id)
-        result = await self._db.execute(stmt)
-        return result.scalar_one_or_none()
-
-    async def get_conversation_token_counts(
-        self,
-        conversation_id: UUID,
-        model_id: str | None = None,
-    ) -> dict:
-        """Compute conversation-level token counts from the most recent visibility record.
-
-        Returns a dict matching TokenCountsResponse fields.
-
-        Args:
-            conversation_id: The conversation to summarize.
-            model_id: Optional current model ID (for context utilization recalculation).
-
-        Returns:
-            Dict with token_counts, context_utilization, message_count, last_updated.
-        """
-        # Get the most recent visibility record for this conversation
-        stmt = (
-            select(VisibilityRecord)
-            .join(Message, Message.id == VisibilityRecord.message_id)
-            .where(Message.conversation_id == conversation_id)
-            .order_by(VisibilityRecord.created_at.desc())
-            .limit(1)
-        )
-        result = await self._db.execute(stmt)
-        latest_record = result.scalar_one_or_none()
-
-        # Count messages in conversation
-        count_stmt = (
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-        )
-        count_result = await self._db.execute(count_stmt)
-        message_count = len(count_result.all())
-
-        if latest_record is None:
-            return {
-                "conversation_id": conversation_id,
-                "token_counts": {
-                    "openai": None,
-                    "anthropic": None,
-                    "openrouter": None,
-                },
-                "context_utilization": None,
-                "message_count": message_count,
-                "last_updated": None,
-            }
-
-        # If a model_id is provided, recalculate context utilization against it
-        context_utilization = None
-        if latest_record.active_token_count is not None and latest_record.context_window_size:
-            utilization_percent = (
-                latest_record.active_token_count / latest_record.context_window_size
-            ) * 100
-            # Determine which provider's count is active from stored data
-            active_provider = _infer_active_provider(latest_record)
-            context_utilization = {
-                "active_token_count": latest_record.active_token_count,
-                "context_window_size": latest_record.context_window_size,
-                "utilization_percent": round(utilization_percent, 1),
-                "provider": active_provider,
-            }
-
-        return {
-            "conversation_id": conversation_id,
-            "token_counts": {
-                "openai": latest_record.tokens_openai,
-                "anthropic": latest_record.tokens_anthropic,
-                "openrouter": latest_record.tokens_openrouter,
-            },
-            "context_utilization": context_utilization,
-            "message_count": message_count,
-            "last_updated": latest_record.created_at,
-        }
-
-
-def _infer_active_provider(record: VisibilityRecord) -> str:
-    """Infer which provider was active based on which count matches active_token_count.
-
-    Falls back to "unknown" if no match is found (should not happen in practice).
-    """
-    if record.active_token_count is not None:
-        if record.tokens_openai == record.active_token_count:
-            return "openai"
-        if record.tokens_anthropic == record.active_token_count:
-            return "anthropic"
-        if record.tokens_openrouter == record.active_token_count:
-            return "openrouter"
-    return "unknown"
+```
+while True:
+    item = await asyncio.wait_for(queue.get(), timeout=60.0)
+    if item is SENTINEL:
+        break
+    if isinstance(item, ToolTaskError):
+        # yield error event to WebSocket, then break
+        break
+    # item is a ToolStep — yield tool_step event to WebSocket
 ```
 
-**Design notes:**
-- `capture()` is the primary entry point, called by ChatService after assembling the full response.
-- The active provider count uses `await` (synchronous from the caller's perspective) because it is needed for rolling summary threshold decisions.
-- Background tasks use `asyncio.create_task()` with a dedicated session from `async_session_factory()` to avoid session lifecycle conflicts. This is the fire-and-forget pattern described in master plan §7 decision #6.
-- `_fill_background_token_count` catches all exceptions to prevent background task failures from propagating.
-- `get_conversation_token_counts` pulls from the most recent visibility record rather than recomputing, since counts are captured per-message.
+- **Timeout (60 seconds):** If `wait_for` raises `TimeoutError`, something has gone deeply wrong (e.g., task panicked in a way that bypassed `try/finally`). On timeout: cancel the background task, yield a tool error event to the WebSocket, and move on. This is a last-resort safety net — the primary error path is the error marker.
+- **Error marker handling:** When a `ToolTaskError` arrives, the drain loop yields an error event to the WebSocket and breaks. The original exception is available in the marker for logging.
 
----
+**Post-drain task await (REQUIRED):**
 
-## Step 3: Create API Routes — `routes/visibility.py`
+After the drain loop exits (whether via sentinel, error marker, or timeout), explicitly `await task` one more time. This serves two purposes:
+1. Surfaces any exception that slipped through the wrapper (e.g., a bug in the wrapper itself)
+2. Ensures the task is fully cleaned up before the LLM's second pass begins
 
-**File:** `src/backend/routes/visibility.py`
+Wrap the await in `try/except` — if the task was already cancelled (timeout path), `CancelledError` is expected.
 
-Two endpoints per the master plan §3.4:
-- `GET /api/messages/{id}/visibility` — full visibility record for a message
-- `GET /api/conversations/{id}/token-counts` — latest token counts for a conversation
+**WebSocket disconnect cancellation:**
 
-```python
-"""Visibility API routes — transparency data for messages and conversations."""
+The chat service's async generator runs inside the WS handler's iteration loop. If the client disconnects, the WS handler stops iterating the generator. But the background tool task keeps running — burning Tavily API calls and lightweight model calls for no audience.
 
-from __future__ import annotations
+The WS handler (in `routes/ws.py`) must track whether a tool task is in flight and cancel it on disconnect. Use the **yield-a-special-event** approach — do NOT store the task as instance state on ChatService. ChatService is a shared singleton; instance state would be clobbered if two WebSocket connections are active simultaneously.
 
-from uuid import UUID
+Instead, when the chat service creates the background task, yield an internal `StreamEvent(type="_tool_task_ref", metadata={"task": task})` event. The WS handler catches this event type, stores the task reference in a **local variable** (per-request stack frame), and does NOT forward it to the client. The WS handler then wraps its generator iteration in `try/finally`:
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.backend.database import get_db
-from src.backend.schemas.visibility import (
-    ContextUtilization,
-    SummaryEventData,
-    TokenCounts,
-    TokenCountsResponse,
-    ToolTraceData,
-    VisibilityResponse,
-)
-from src.backend.services.token_counter import TokenCounter
-from src.backend.services.visibility import VisibilityService
-
-router = APIRouter(prefix="/api", tags=["visibility"])
-
-
-def _get_visibility_service(db: AsyncSession = Depends(get_db)) -> VisibilityService:
-    """Dependency: construct a VisibilityService with the request's DB session."""
-    token_counter = TokenCounter()
-    return VisibilityService(db=db, token_counter=token_counter)
-
-
-@router.get(
-    "/messages/{message_id}/visibility",
-    response_model=VisibilityResponse,
-    summary="Get visibility data for a message",
-    description="Returns the full visibility record for an assistant message, "
-    "including API payload, token counts, reasoning content, summary events, "
-    "and tool traces.",
-)
-async def get_message_visibility(
-    message_id: UUID,
-    service: VisibilityService = Depends(_get_visibility_service),
-) -> VisibilityResponse:
-    """Retrieve the visibility record associated with an assistant message.
-
-    Raises 404 if no visibility record exists for the given message ID
-    (either the message does not exist or it is not an assistant message).
-    """
-    record = await service.get_by_message_id(message_id)
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No visibility record found for message {message_id}",
-        )
-
-    # Build context utilization if data is present
-    context_utilization = None
-    if record.active_token_count is not None and record.context_window_size:
-        utilization_percent = (record.active_token_count / record.context_window_size) * 100
-        from src.backend.services.visibility import _infer_active_provider
-
-        context_utilization = ContextUtilization(
-            active_token_count=record.active_token_count,
-            context_window_size=record.context_window_size,
-            utilization_percent=round(utilization_percent, 1),
-            provider=_infer_active_provider(record),
-        )
-
-    # Parse JSONB fields into typed schemas
-    summary_event = None
-    if record.summary_event is not None:
-        summary_event = SummaryEventData(**record.summary_event)
-
-    tool_trace = None
-    if record.tool_trace is not None:
-        tool_trace = ToolTraceData(**record.tool_trace)
-
-    return VisibilityResponse(
-        id=record.id,
-        message_id=record.message_id,
-        request_payload=record.request_payload,
-        response_metadata=record.response_metadata,
-        token_counts=TokenCounts(
-            openai=record.tokens_openai,
-            anthropic=record.tokens_anthropic,
-            openrouter=record.tokens_openrouter,
-        ),
-        output_tokens=record.output_tokens,
-        context_utilization=context_utilization,
-        reasoning_content=record.reasoning_content,
-        summary_event=summary_event,
-        tool_trace=tool_trace,
-        created_at=record.created_at,
-    )
-
-
-@router.get(
-    "/conversations/{conversation_id}/token-counts",
-    response_model=TokenCountsResponse,
-    summary="Get token counts for a conversation",
-    description="Returns the latest token counts from all three providers and "
-    "context window utilization for the active model. Pulls from the most "
-    "recent visibility record in the conversation.",
-)
-async def get_conversation_token_counts(
-    conversation_id: UUID,
-    service: VisibilityService = Depends(_get_visibility_service),
-) -> TokenCountsResponse:
-    """Return conversation-level token count summary.
-
-    Returns zeroed counts if the conversation has no visibility records yet
-    (e.g., no assistant messages). Does not raise 404 for empty conversations
-    because a conversation may exist with only user messages.
-    """
-    data = await service.get_conversation_token_counts(conversation_id)
-
-    context_utilization = None
-    if data["context_utilization"] is not None:
-        context_utilization = ContextUtilization(**data["context_utilization"])
-
-    return TokenCountsResponse(
-        conversation_id=data["conversation_id"],
-        token_counts=TokenCounts(**data["token_counts"]),
-        context_utilization=context_utilization,
-        message_count=data["message_count"],
-        last_updated=data["last_updated"],
-    )
+```
+# In ws.py handler
+active_tool_task = None
+try:
+    async for event in chat_service.handle_user_message(...):
+        if event.type == "_tool_task_ref":
+            active_tool_task = event.metadata["task"]
+            continue  # don't send to client
+        await websocket.send_json(serialize(event))
+finally:
+    if active_tool_task and not active_tool_task.done():
+        active_tool_task.cancel()
 ```
 
-**Design notes:**
-- The route module stays thin — business logic lives in the service.
-- `_get_visibility_service` constructs the service per-request with the DB session from `get_db()`.
-- The endpoint manually maps ORM model fields to Pydantic schemas rather than relying on `from_attributes` auto-conversion, because the response schema reshapes flat columns into nested structures (`token_counts`, `context_utilization`).
-- 404 is returned only for the message-level endpoint; the conversation-level endpoint returns empty/null data for conversations without visibility records.
+The background task wrapper must treat `asyncio.CancelledError` as a clean exit — because `except Exception` doesn't catch it (see above), it propagates out through `finally`, pushing the sentinel. No error marker is placed on the queue. No error event is sent to the WebSocket.
+
+- **Nested tool calls:** For v1, assume at most one tool call per exchange. If the LLM returns multiple tool calls in one response, process them sequentially. If the second LLM pass also returns a tool call, cap at 2 total tool rounds to prevent infinite loops.
+
+- **The `lightweight_complete` closure:** Create it once in the chat service — it captures the OpenAI provider from the registry and `settings.lightweight_model`. Pass it into `ToolContext`. Shape: `async def lightweight_complete(messages: list[ChatMessage], response_format: dict | None = None) -> CompletionResult`
+
+**Step 6: Modify `src/backend/routes/ws.py`**
+
+The WS handler needs to forward new event types from the chat service's async generator:
+- `summary_started` / `summary_complete` → send as-is
+- `tool_call_start` → serialize per master plan §3.3 WS protocol
+- `tool_step` → serialize with step_name, step_index, status, data
+- `stream_done` now includes visibility_id, token_counts, context_utilization
+
+Also update dependency injection: the WS route (or the app's lifespan/dependency setup) must construct `ChatService` with all its new dependencies (`RollingSummaryService`, `ToolFramework`, `VisibilityService`).
+
+**Step 7: Wire dependencies in `main.py` / app lifespan**
+
+Create all service instances during app startup:
+- `TokenCounter(settings, anthropic_client)`
+- `RollingSummaryService(token_counter, provider_registry, settings)`
+- `ToolFramework()` + register `WebSearchTool`
+- `VisibilityService(token_counter, settings)`
+- `ChatService(provider_registry, conversation_service, rolling_summary_service, tool_framework, visibility_service, token_counter, settings)`
+
+Use FastAPI's lifespan context or a simple startup event. Store service instances so routes can access them (app state or dependency injection).
+
+**Smoke check:** Start the app. Connect via WebSocket, send a message (with mocked provider). Verify the stream completes and a visibility record is created in the DB.
+
+### Phase 4 — Tests
+
+**Step 8: `tests/unit/test_visibility_service.py`**
+
+- Test `capture()` creates a visibility record with correct fields
+- Test `capture()` spawns background tasks for non-active provider token counts (mock `asyncio.create_task`, verify it's called twice)
+- Test `get_visibility()` returns the correct record by message_id
+- Test `get_latest_token_counts()` returns counts from the most recent visibility record
+- Test `update_auto_title_data()` merges title data into response_metadata without overwriting existing data
+- Test background token count task handles errors gracefully (mock token counter to raise, verify it doesn't propagate)
+
+**Step 9: `tests/integration/test_visibility_api.py`**
+
+- Create a conversation, send a message (mocked provider), then `GET /api/messages/{id}/visibility` → verify all fields present
+- `GET /api/conversations/{id}/token-counts` → verify token counts returned
+- 404 for nonexistent message/conversation
+- Verify request_payload contains the messages array that was sent to the LLM
+
+**Step 10: `tests/unit/test_tool_call_subloop.py`**
+
+Dedicated tests for the queue-based tool call sub-loop pattern, isolated from the full chat orchestrator. These tests verify the sentinel contract and failure modes independently. Test against the sub-loop logic directly — mock the tool framework, provider, and queue to control timing.
+
+- **Happy path:** Mock `execute_tool_call` to push 3 `ToolStep` events via `on_step`, then return a `ToolResult`. Iterate the generator. Verify: 3 `tool_step` events yielded in order → sentinel received → drain loop exits → `ToolResult` collected → task awaited cleanly.
+
+- **Task raises mid-execution:** Mock `execute_tool_call` to push 1 step, then raise `ToolExecutionError`. Verify: 1 `tool_step` event yielded → `ToolTaskError` marker arrives on queue → drain loop yields an error event and breaks → sentinel arrives (from `finally`) → task is awaited after drain loop → original exception logged. **Critical assertion:** the drain loop does NOT hang. Set a test-level timeout (e.g., 5 seconds) so a hang fails the test instead of blocking CI.
+
+- **Task raises before pushing any steps:** Mock `execute_tool_call` to raise immediately without calling `on_step`. Verify: `ToolTaskError` marker arrives → drain loop yields error event and breaks → sentinel arrives → task is awaited. Queue was empty of steps — confirm the drain loop handles this without trying to yield step events.
+
+- **Timeout safety net:** Mock `execute_tool_call` as an async function that sleeps forever (simulating a task that never pushes a sentinel — e.g., the `finally` was somehow bypassed). Set the drain loop timeout to a short value (e.g., 1 second) for this test. Verify: `asyncio.TimeoutError` fires → background task is cancelled → error event yielded to caller → drain loop exits. **Critical assertion:** the generator does not hang indefinitely.
+
+- **Disconnect mid-drain (cancellation):** Start the generator, yield the first 1-2 `tool_step` events, then stop iterating (simulating WebSocket disconnect). Verify: `active_tool_task.cancel()` is called → the background task receives `CancelledError` → the task's `finally` clause pushes the sentinel → task exits cleanly without logging an error. **Critical assertion:** no orphaned tasks remain in the event loop after the test completes.
+
+- **CancelledError in task wrapper:** Verify that when the task receives `CancelledError`, it does NOT push a `ToolTaskError` marker — only the sentinel. The cancellation is a clean exit, not an error to report.
+
+**Step 11: `tests/integration/test_full_wiring.py`**
+
+This is the capstone test suite — verifies all subsystems work together through the chat orchestrator.
+
+- **Basic flow:** Send message → receive stream events → verify visibility record exists with request_payload, response_metadata, and active provider token count
+- **Rolling summary trigger:** Set up a conversation that exceeds 80% of model's context window (mock token counter to return high count). Send a message → verify `summary_started` and `summary_complete` WS events received → verify `RollingSummary` record in DB → verify visibility record has summary_event populated
+- **Tool call flow (end-to-end):** Mock provider's `stream_chat` to yield a `tool_call` event on first call, then normal tokens on second call. Mock `ToolFramework.execute_tool_call` to return a canned result with trace steps. Verify: `tool_call_start` event received → `tool_step` events received → final response streams → visibility record has tool_trace populated → tool_call and tool_result messages persisted in DB
+- **Tool call failure (end-to-end):** Mock `execute_tool_call` to raise. Verify: error event received over WebSocket → connection stays open → no assistant message persisted for the failed tool attempt → user can send another message afterward
+- **Reasoning capture:** Mock provider to yield `reasoning` events. Verify visibility record has reasoning_content.
+- **Auto-title + visibility:** Verify that after auto-title fires, the first assistant message's visibility record has title generation data in response_metadata.
+- **Multiple subsystems in one exchange:** Engineer a scenario where rolling summary fires AND a tool call happens in the same exchange. Verify all data captured correctly.
 
 ---
 
-## Step 4: Register Routes in `main.py`
+## Error Handling
 
-**File:** `src/backend/main.py`
-
-Add the visibility router to the FastAPI app alongside the existing routers.
-
-```python
-# In src/backend/main.py, add to the router registration section:
-
-from src.backend.routes.visibility import router as visibility_router
-
-app.include_router(visibility_router)
-```
-
-This follows the same pattern as the existing conversation and model routers.
+- **Active provider token count failure:** If counting fails during `capture()`, log the error and set the count to `None` in the visibility record. Don't block the response — the record is still valuable without the count.
+- **Background token count failure:** Swallow and log. The corresponding column stays `NULL`. No user impact.
+- **Rolling summary failure during wiring (spec §11.5):** Catch the exception in `handle_user_message()`. Skip the summary, send full context to the LLM. If the LLM returns a context overflow error, it surfaces to the user as a provider error. Log a warning.
+- **Tool execution failure:** `ToolFramework.execute_tool_call()` returns a `ToolResult` with error info (not an exception) for handled failures. The error result is sent to the LLM as a tool_result so it can inform the user. For unhandled exceptions, catch `ToolExecutionError`, yield an error event, and continue without tool results.
+- **Visibility capture failure:** Catch any exception from `visibility_service.capture()`. Log it. The chat response already streamed to the user — visibility is best-effort, not critical path.
 
 ---
 
-## Step 5: Integration with ChatService — Where `capture()` Is Called
-
-**File:** `src/backend/services/chat.py`
-
-The `ChatService.handle_user_message()` method is the central orchestrator (master plan §7 decision #4). After the LLM response is fully streamed and assembled, it calls `VisibilityService.capture()` to record all transparency data.
-
-The following shows the integration points within the existing ChatService flow. This is not the complete ChatService implementation (that belongs to Unit C+), but the specific visibility-related additions.
-
-```python
-# In src/backend/services/chat.py — additions for visibility integration
-
-from src.backend.services.visibility import VisibilityService
-from src.backend.services.token_counter import TokenCounter
-
-
-class ChatService:
-    """Central chat orchestrator. Coordinates providers, tools, summaries, and visibility."""
-
-    def __init__(self, db: AsyncSession, ...) -> None:
-        self._db = db
-        # ... existing dependencies ...
-        self._visibility = VisibilityService(
-            db=db,
-            token_counter=TokenCounter(),
-        )
-
-    async def handle_user_message(
-        self,
-        conversation_id: UUID,
-        content: str,
-        model_id: str,
-        provider: str,
-        reasoning_level: str | None = None,
-        on_stream: Callable[[StreamEvent], Awaitable[None]] | None = None,
-    ) -> Message:
-        """Process a user message through the full pipeline.
-
-        The visibility capture happens at the END of the pipeline, after:
-        1. Context assembly (system prompt + messages + optional summary)
-        2. Rolling summary check (Unit S — may compress context)
-        3. LLM API call (streaming response)
-        4. Tool execution loop (if tools are invoked)
-        5. Final response assembly and persistence
-
-        Only then is capture() called with all the accumulated data.
-        """
-        # ... Steps 1-5 happen here (Units C, S, T) ...
-
-        # --- Build the request payload for visibility ---
-        # This is the exact messages array + parameters sent to the LLM.
-        request_payload = {
-            "messages": [msg.to_dict() for msg in assembled_messages],
-            "model": model_id,
-            "provider": provider,
-            "reasoning_level": reasoning_level,
-            "tools": tool_schemas if tool_schemas else None,
-            # Include any other parameters sent to the provider
-        }
-
-        # --- Build response metadata from the LLM response ---
-        response_metadata = {
-            "finish_reason": finish_reason,
-            "usage": usage_data,  # tokens reported by the API
-        }
-
-        # --- Capture summary event if a rolling summary was triggered ---
-        summary_event = None
-        if summary_was_triggered:
-            summary_event = {
-                "triggered_by_message_id": str(user_message.id),
-                "summarized_message_ids": [str(mid) for mid in summarized_ids],
-                "summary_text": summary_text,
-                "tokens_before": tokens_before_summary,
-                "tokens_after": tokens_after_summary,
-                "model_used": settings.lightweight_model,
-            }
-
-        # --- Capture tool trace if a tool was invoked ---
-        tool_trace = None
-        if tool_result is not None:
-            tool_trace = {
-                "tool_name": tool_call.tool_name,
-                "tool_arguments": tool_call.arguments,
-                "steps": [
-                    {
-                        "name": step.name,
-                        "status": step.status,
-                        "data": step.data,
-                        "duration_ms": step.duration_ms,
-                    }
-                    for step in tool_result.trace
-                ],
-                "total_duration_ms": sum(s.duration_ms for s in tool_result.trace),
-            }
-
-        # --- Create visibility record ---
-        visibility_record = await self._visibility.capture(
-            message_id=assistant_message.id,
-            messages=assembled_messages,
-            model_id=model_id,
-            provider=provider,
-            request_payload=request_payload,
-            response_metadata=response_metadata,
-            output_tokens=usage_data.get("completion_tokens") if usage_data else None,
-            reasoning_content=accumulated_reasoning,
-            summary_event=summary_event,
-            tool_trace=tool_trace,
-        )
-
-        # --- Include visibility info in the stream_done event ---
-        if on_stream:
-            await on_stream(StreamEvent(
-                type="done",
-                metadata={
-                    "message_id": str(assistant_message.id),
-                    "visibility_id": str(visibility_record.id),
-                    "token_counts": {
-                        "openai": visibility_record.tokens_openai,
-                        "anthropic": visibility_record.tokens_anthropic,
-                        "openrouter": visibility_record.tokens_openrouter,
-                    },
-                    "context_utilization": {
-                        "active": visibility_record.active_token_count,
-                        "window": visibility_record.context_window_size,
-                    },
-                },
-            ))
-
-        return assistant_message
-```
-
-**Key integration points:**
-1. `VisibilityService` is instantiated as a dependency of `ChatService`.
-2. `capture()` is called **after** the full response pipeline completes — this ensures all data (reasoning, summary events, tool traces) is available.
-3. The `stream_done` WebSocket event includes the `visibility_id` so the frontend can fetch the full record on demand.
-4. The `assembled_messages` list (the exact context sent to the LLM) is passed to `capture()` for token counting. This is the same list used for the API call, ensuring counts match reality.
-
----
-
-## Step 6: Test Plan — `tests/integration/test_visibility_api.py`
-
-**File:** `tests/integration/test_visibility_api.py`
-
-Integration tests that verify the full visibility pipeline: record creation, API endpoints, and background token count population.
-
-```python
-"""Integration tests for the visibility layer.
-
-Tests cover:
-- VisibilityService.capture() creates records with correct data
-- Background token count population
-- GET /api/messages/{id}/visibility returns correct response
-- GET /api/conversations/{id}/token-counts returns correct response
-- Edge cases: missing records, empty conversations
-"""
-
-from __future__ import annotations
-
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
-
-import pytest
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.backend.models.conversation import Conversation
-from src.backend.models.message import Message
-from src.backend.models.visibility import VisibilityRecord
-from src.backend.services.token_counter import TokenCounter
-from src.backend.services.visibility import VisibilityService
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def mock_token_counter() -> MagicMock:
-    """A mock TokenCounter that returns predictable values per provider."""
-    counter = MagicMock(spec=TokenCounter)
-
-    async def mock_count(*, messages, provider, model_id):
-        counts = {
-            "openai": 1000,
-            "anthropic": 1050,
-            "openrouter": 980,
-        }
-        return counts[provider]
-
-    counter.count = AsyncMock(side_effect=mock_count)
-    counter.get_context_window = MagicMock(return_value=200_000)
-    return counter
-
-
-@pytest.fixture
-async def sample_conversation(db_session: AsyncSession) -> Conversation:
-    """Create a sample conversation in the test database."""
-    conversation = Conversation(title="Test Conversation")
-    db_session.add(conversation)
-    await db_session.flush()
-    return conversation
-
-
-@pytest.fixture
-async def sample_assistant_message(
-    db_session: AsyncSession, sample_conversation: Conversation
-) -> Message:
-    """Create a sample assistant message in the test database."""
-    message = Message(
-        conversation_id=sample_conversation.id,
-        role="assistant",
-        content="Hello, I can help with that.",
-        model_id="gpt-5",
-        provider="openai",
-        sequence=2,
-    )
-    db_session.add(message)
-    await db_session.flush()
-    return message
-
-
-@pytest.fixture
-def sample_messages() -> list:
-    """Sample ChatMessage-like objects for token counting."""
-    # Using simple objects with the fields TokenCounter needs
-    return [
-        MagicMock(role="system", content="You are Wayne."),
-        MagicMock(role="user", content="Hello"),
-        MagicMock(role="assistant", content="Hello, I can help with that."),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# VisibilityService.capture() tests
-# ---------------------------------------------------------------------------
-
-
-class TestVisibilityCapture:
-    """Tests for VisibilityService.capture()."""
-
-    async def test_capture_creates_record_with_active_count(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """capture() should create a visibility record with the active provider's
-        token count populated synchronously."""
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="gpt-5",
-            provider="openai",
-            request_payload={"messages": [], "model": "gpt-5"},
-            response_metadata={"finish_reason": "stop"},
-            output_tokens=42,
-        )
-
-        assert record.id is not None
-        assert record.message_id == sample_assistant_message.id
-        assert record.tokens_openai == 1000  # Active provider, set synchronously
-        assert record.active_token_count == 1000
-        assert record.context_window_size == 200_000
-        assert record.output_tokens == 42
-        assert record.request_payload == {"messages": [], "model": "gpt-5"}
-        assert record.response_metadata == {"finish_reason": "stop"}
-
-    async def test_capture_with_anthropic_active(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """When Anthropic is the active provider, tokens_anthropic is set synchronously."""
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="claude-sonnet-4-6-20250514",
-            provider="anthropic",
-            request_payload={"messages": [], "model": "claude-sonnet-4-6-20250514"},
-        )
-
-        assert record.tokens_anthropic == 1050
-        assert record.tokens_openai is None  # Will be filled by background task
-        assert record.tokens_openrouter is None
-        assert record.active_token_count == 1050
-
-    async def test_capture_with_openrouter_active(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """When OpenRouter is the active provider, tokens_openrouter is set synchronously."""
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="deepseek/deepseek-v3.2",
-            provider="openrouter",
-            request_payload={"messages": [], "model": "deepseek/deepseek-v3.2"},
-        )
-
-        assert record.tokens_openrouter == 980
-        assert record.tokens_openai is None
-        assert record.tokens_anthropic is None
-        assert record.active_token_count == 980
-
-    async def test_capture_stores_reasoning_content(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """Reasoning content (CoT) is stored when provided."""
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="gpt-5",
-            provider="openai",
-            request_payload={"messages": []},
-            reasoning_content="The user is asking about X, so I should consider Y and Z.",
-        )
-
-        assert record.reasoning_content == (
-            "The user is asking about X, so I should consider Y and Z."
-        )
-
-    async def test_capture_stores_summary_event(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """Rolling summary event data is stored when a summary was triggered."""
-        summary_data = {
-            "triggered_by_message_id": str(uuid4()),
-            "summarized_message_ids": [str(uuid4()), str(uuid4())],
-            "summary_text": "The conversation covered topics A and B.",
-            "tokens_before": 150000,
-            "tokens_after": 80000,
-            "model_used": "gpt-5-nano",
-        }
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="gpt-5",
-            provider="openai",
-            request_payload={"messages": []},
-            summary_event=summary_data,
-        )
-
-        assert record.summary_event == summary_data
-        assert record.summary_event["tokens_before"] == 150000
-        assert record.summary_event["model_used"] == "gpt-5-nano"
-
-    async def test_capture_stores_tool_trace(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """Tool execution trace is stored when a tool was invoked."""
-        trace_data = {
-            "tool_name": "web_search",
-            "tool_arguments": {"reason": "Need current info", "query": "latest news"},
-            "steps": [
-                {"name": "query_generation", "status": "complete", "data": {}, "duration_ms": 320},
-                {"name": "search_round_1", "status": "complete", "data": {}, "duration_ms": 1200},
-                {"name": "filtering", "status": "complete", "data": {}, "duration_ms": 15},
-                {"name": "coverage_check", "status": "complete", "data": {}, "duration_ms": 280},
-            ],
-            "total_duration_ms": 1815,
-        }
-        service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="gpt-5",
-            provider="openai",
-            request_payload={"messages": []},
-            tool_trace=trace_data,
-        )
-
-        assert record.tool_trace == trace_data
-        assert record.tool_trace["tool_name"] == "web_search"
-        assert len(record.tool_trace["steps"]) == 4
-
-
-# ---------------------------------------------------------------------------
-# Background token count tests
-# ---------------------------------------------------------------------------
-
-
-class TestBackgroundTokenCounts:
-    """Tests for async background token count population."""
-
-    async def test_background_tasks_fill_inactive_counts(
-        self,
-        db_session: AsyncSession,
-        mock_token_counter: MagicMock,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """After capture() with openai active, background tasks should fill
-        anthropic and openrouter counts."""
-        # Patch async_session_factory to return our test session
-        with patch(
-            "src.backend.services.visibility.async_session_factory"
-        ) as mock_factory:
-            # Create a mock session that updates the record in our test DB
-            mock_bg_session = AsyncMock(spec=AsyncSession)
-
-            async def mock_get(model, record_id):
-                """Look up the record from the real test session."""
-                from sqlalchemy import select
-
-                stmt = select(VisibilityRecord).where(VisibilityRecord.id == record_id)
-                result = await db_session.execute(stmt)
-                return result.scalar_one_or_none()
-
-            mock_bg_session.get = AsyncMock(side_effect=mock_get)
-            mock_bg_session.commit = AsyncMock()
-
-            # Make the context manager return our mock session
-            mock_context = AsyncMock()
-            mock_context.__aenter__ = AsyncMock(return_value=mock_bg_session)
-            mock_context.__aexit__ = AsyncMock(return_value=False)
-            mock_factory.return_value = mock_context
-
-            service = VisibilityService(db=db_session, token_counter=mock_token_counter)
-
-            record = await service.capture(
-                message_id=sample_assistant_message.id,
-                messages=sample_messages,
-                model_id="gpt-5",
-                provider="openai",
-                request_payload={"messages": []},
-            )
-
-            # Let background tasks run
-            await asyncio.sleep(0.1)
-
-            # Verify the token counter was called for all three providers
-            assert mock_token_counter.count.call_count == 3  # 1 sync + 2 background
-
-    async def test_background_task_handles_errors_gracefully(
-        self,
-        db_session: AsyncSession,
-        sample_assistant_message: Message,
-        sample_messages: list,
-    ):
-        """If a background token count fails, it should log the error
-        but not crash or affect other operations."""
-        counter = MagicMock(spec=TokenCounter)
-
-        call_count = 0
-
-        async def mock_count(*, messages, provider, model_id):
-            nonlocal call_count
-            call_count += 1
-            if provider == "openai":
-                return 1000  # Active provider succeeds
-            raise RuntimeError("Simulated API failure")
-
-        counter.count = AsyncMock(side_effect=mock_count)
-        counter.get_context_window = MagicMock(return_value=200_000)
-
-        service = VisibilityService(db=db_session, token_counter=counter)
-
-        # This should not raise even though background tasks will fail
-        record = await service.capture(
-            message_id=sample_assistant_message.id,
-            messages=sample_messages,
-            model_id="gpt-5",
-            provider="openai",
-            request_payload={"messages": []},
-        )
-
-        # Active count is still set correctly
-        assert record.tokens_openai == 1000
-        assert record.active_token_count == 1000
-
-        # Let background tasks run (and fail)
-        await asyncio.sleep(0.1)
-
-        # No exception propagated — test passes if we get here
-
-
-# ---------------------------------------------------------------------------
-# GET /api/messages/{id}/visibility tests
-# ---------------------------------------------------------------------------
-
-
-class TestGetMessageVisibility:
-    """Tests for the GET /api/messages/{id}/visibility endpoint."""
-
-    async def test_returns_visibility_record(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_assistant_message: Message,
-    ):
-        """Endpoint returns the full visibility record for a message."""
-        # Create a visibility record directly in the DB
-        record = VisibilityRecord(
-            message_id=sample_assistant_message.id,
-            request_payload={"messages": [{"role": "user", "content": "Hello"}], "model": "gpt-5"},
-            response_metadata={"finish_reason": "stop", "usage": {"total_tokens": 150}},
-            tokens_openai=1000,
-            tokens_anthropic=1050,
-            tokens_openrouter=980,
-            output_tokens=42,
-            context_window_size=200_000,
-            active_token_count=1000,
-            reasoning_content="I considered multiple approaches.",
-        )
-        db_session.add(record)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/messages/{sample_assistant_message.id}/visibility"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["message_id"] == str(sample_assistant_message.id)
-        assert data["token_counts"]["openai"] == 1000
-        assert data["token_counts"]["anthropic"] == 1050
-        assert data["token_counts"]["openrouter"] == 980
-        assert data["output_tokens"] == 42
-        assert data["context_utilization"]["active_token_count"] == 1000
-        assert data["context_utilization"]["context_window_size"] == 200_000
-        assert data["context_utilization"]["utilization_percent"] == 0.5
-        assert data["context_utilization"]["provider"] == "openai"
-        assert data["reasoning_content"] == "I considered multiple approaches."
-        assert data["request_payload"]["model"] == "gpt-5"
-
-    async def test_returns_404_for_missing_record(self, client: AsyncClient):
-        """Endpoint returns 404 when no visibility record exists for the message."""
-        fake_id = uuid4()
-        response = await client.get(f"/api/messages/{fake_id}/visibility")
-        assert response.status_code == 404
-
-    async def test_returns_record_with_summary_event(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_assistant_message: Message,
-    ):
-        """Endpoint correctly deserializes summary_event JSONB data."""
-        summary_data = {
-            "triggered_by_message_id": str(uuid4()),
-            "summarized_message_ids": [str(uuid4())],
-            "summary_text": "Summary of earlier messages.",
-            "tokens_before": 160000,
-            "tokens_after": 75000,
-            "model_used": "gpt-5-nano",
-        }
-        record = VisibilityRecord(
-            message_id=sample_assistant_message.id,
-            request_payload={"messages": []},
-            tokens_openai=1000,
-            active_token_count=1000,
-            context_window_size=200_000,
-            summary_event=summary_data,
-        )
-        db_session.add(record)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/messages/{sample_assistant_message.id}/visibility"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["summary_event"] is not None
-        assert data["summary_event"]["tokens_before"] == 160000
-        assert data["summary_event"]["model_used"] == "gpt-5-nano"
-
-    async def test_returns_record_with_tool_trace(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_assistant_message: Message,
-    ):
-        """Endpoint correctly deserializes tool_trace JSONB data."""
-        trace_data = {
-            "tool_name": "web_search",
-            "tool_arguments": {"reason": "Need info", "query": "test"},
-            "steps": [
-                {"name": "query_gen", "status": "complete", "data": {}, "duration_ms": 200},
-            ],
-            "total_duration_ms": 200,
-        }
-        record = VisibilityRecord(
-            message_id=sample_assistant_message.id,
-            request_payload={"messages": []},
-            tokens_openai=1000,
-            active_token_count=1000,
-            context_window_size=200_000,
-            tool_trace=trace_data,
-        )
-        db_session.add(record)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/messages/{sample_assistant_message.id}/visibility"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["tool_trace"] is not None
-        assert data["tool_trace"]["tool_name"] == "web_search"
-        assert len(data["tool_trace"]["steps"]) == 1
-
-    async def test_returns_record_with_null_optional_fields(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_assistant_message: Message,
-    ):
-        """Endpoint handles records where optional fields are null."""
-        record = VisibilityRecord(
-            message_id=sample_assistant_message.id,
-            request_payload={"messages": []},
-            tokens_openai=1000,
-            active_token_count=1000,
-            context_window_size=200_000,
-        )
-        db_session.add(record)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/messages/{sample_assistant_message.id}/visibility"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["reasoning_content"] is None
-        assert data["summary_event"] is None
-        assert data["tool_trace"] is None
-        assert data["response_metadata"] is None
-        assert data["output_tokens"] is None
-
-
-# ---------------------------------------------------------------------------
-# GET /api/conversations/{id}/token-counts tests
-# ---------------------------------------------------------------------------
-
-
-class TestGetConversationTokenCounts:
-    """Tests for the GET /api/conversations/{id}/token-counts endpoint."""
-
-    async def test_returns_counts_from_latest_record(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_conversation: Conversation,
-    ):
-        """Endpoint returns token counts from the most recent visibility record."""
-        # Create two messages with visibility records
-        msg1 = Message(
-            conversation_id=sample_conversation.id,
-            role="assistant",
-            content="First response",
-            model_id="gpt-5",
-            provider="openai",
-            sequence=2,
-        )
-        db_session.add(msg1)
-        await db_session.flush()
-
-        record1 = VisibilityRecord(
-            message_id=msg1.id,
-            request_payload={"messages": []},
-            tokens_openai=500,
-            tokens_anthropic=520,
-            tokens_openrouter=490,
-            active_token_count=500,
-            context_window_size=200_000,
-        )
-        db_session.add(record1)
-
-        msg2 = Message(
-            conversation_id=sample_conversation.id,
-            role="assistant",
-            content="Second response",
-            model_id="gpt-5",
-            provider="openai",
-            sequence=4,
-        )
-        db_session.add(msg2)
-        await db_session.flush()
-
-        record2 = VisibilityRecord(
-            message_id=msg2.id,
-            request_payload={"messages": []},
-            tokens_openai=1000,
-            tokens_anthropic=1050,
-            tokens_openrouter=980,
-            active_token_count=1000,
-            context_window_size=200_000,
-        )
-        db_session.add(record2)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/conversations/{sample_conversation.id}/token-counts"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-
-        # Should return the latest record's counts (record2)
-        assert data["token_counts"]["openai"] == 1000
-        assert data["token_counts"]["anthropic"] == 1050
-        assert data["token_counts"]["openrouter"] == 980
-        assert data["context_utilization"]["active_token_count"] == 1000
-        assert data["context_utilization"]["utilization_percent"] == 0.5
-
-    async def test_returns_empty_for_conversation_without_visibility(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_conversation: Conversation,
-    ):
-        """Endpoint returns null counts for a conversation with no visibility records."""
-        response = await client.get(
-            f"/api/conversations/{sample_conversation.id}/token-counts"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["token_counts"]["openai"] is None
-        assert data["token_counts"]["anthropic"] is None
-        assert data["token_counts"]["openrouter"] is None
-        assert data["context_utilization"] is None
-        assert data["message_count"] == 0
-
-    async def test_message_count_reflects_all_roles(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        sample_conversation: Conversation,
-    ):
-        """Message count includes all messages in the conversation, not just assistant."""
-        for i, role in enumerate(["user", "assistant", "user", "assistant"]):
-            msg = Message(
-                conversation_id=sample_conversation.id,
-                role=role,
-                content=f"Message {i}",
-                sequence=i + 1,
-                model_id="gpt-5" if role == "assistant" else None,
-                provider="openai" if role == "assistant" else None,
-            )
-            db_session.add(msg)
-        await db_session.flush()
-        await db_session.commit()
-
-        response = await client.get(
-            f"/api/conversations/{sample_conversation.id}/token-counts"
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["message_count"] == 4
-```
-
-**Test coverage summary:**
-
-| Area | Tests | What is verified |
-|---|---|---|
-| `capture()` — active provider | 3 tests (one per provider) | Correct column populated synchronously; others null |
-| `capture()` — optional fields | 3 tests | Reasoning, summary event, tool trace stored correctly |
-| Background token counts | 2 tests | Inactive providers filled async; errors handled gracefully |
-| `GET /messages/{id}/visibility` | 5 tests | Full record, 404, summary event, tool trace, null fields |
-| `GET /conversations/{id}/token-counts` | 3 tests | Latest record, empty conversation, message count |
-| **Total** | **16 tests** | |
-
----
-
-## File Summary
-
-| File | Purpose |
-|---|---|
-| `src/backend/schemas/visibility.py` | Pydantic response models: `VisibilityResponse`, `TokenCountsResponse`, and nested schemas |
-| `src/backend/services/visibility.py` | `VisibilityService` with `capture()`, `get_by_message_id()`, `get_conversation_token_counts()` |
-| `src/backend/routes/visibility.py` | FastAPI router: `GET /api/messages/{id}/visibility`, `GET /api/conversations/{id}/token-counts` |
-| `src/backend/main.py` | Router registration (one line addition) |
-| `src/backend/services/chat.py` | Integration point: `capture()` called after full response pipeline |
-| `tests/integration/test_visibility_api.py` | 16 integration tests covering service, endpoints, and background tasks |
-
----
-
-## Implementation Order
-
-1. **schemas/visibility.py** — Define all response shapes first (no dependencies)
-2. **services/visibility.py** — Core logic (depends on TokenCounter from Unit S, ORM model from Unit F)
-3. **routes/visibility.py** — Thin API layer (depends on service + schemas)
-4. **main.py** — Register router (one line)
-5. **tests/integration/test_visibility_api.py** — Verify everything works together
-6. **services/chat.py** — Wire `capture()` into the chat orchestrator (done in Phase 6 / Unit C+)
-
-Steps 1-5 can be completed within Unit V. Step 6 happens during the Phase 6 integration (Unit C+) when all subsystems are wired together into the chat orchestrator.
+## Completion Criteria
+
+1. Every assistant message has an associated visibility record with request_payload and response_metadata
+2. Active provider token count is populated synchronously in the visibility record
+3. Non-active provider token counts populate asynchronously via background tasks
+4. `GET /api/messages/{id}/visibility` returns the full visibility record for any assistant message
+5. `GET /api/conversations/{id}/token-counts` returns the latest token counts with context utilization
+6. Rolling summary triggers when threshold exceeded and `summary_started`/`summary_complete` WS events are sent
+7. Tool calls execute through the framework with real-time `tool_step` WS events streamed to the client
+8. Tool call and tool result messages are persisted in the conversation with correct sequence numbers
+9. Reasoning content is captured in the visibility record when present
+10. Summary events are captured in the visibility record when a rolling summary fires
+11. Tool traces are captured in the visibility record when a tool is invoked
+12. Auto-title data is stored in the first assistant message's visibility record
+13. All subsystem failures degrade gracefully — no crashes from visibility, summary, or tool errors
+14. Tool call sub-loop sentinel contract is enforced: `try/finally` guarantees sentinel delivery, errors travel through the queue, drain loop has a timeout, and WebSocket disconnect cancels the background task
+15. All unit and integration tests pass, including isolated sub-loop pattern tests

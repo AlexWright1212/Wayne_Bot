@@ -26,12 +26,12 @@ If the information below seems potentially stale (6+ months since "Last verified
 
 ### Current Models (GPT-5 family)
 
-| Model | API Model ID | Context Window | Input $/1M | Output $/1M | Notes |
-|---|---|---|---|---|---|
-| GPT-5.2 | `gpt-5.2` | — | $1.75 | $14.00 | Flagship reasoning model |
-| GPT-5 | `gpt-5` | — | ~$1.00 | ~$8.00 | Default workhorse, replaced GPT-4o |
-| GPT-5 mini | `gpt-5-mini` | — | $0.25 | $2.00 | Cost-efficient mid-tier |
-| GPT-5 nano | `gpt-5-nano` | — | $0.05 | $0.40 | Cheapest/fastest, used as Wayne's lightweight model |
+| Model | API Model ID | Context Window | Max Output | Input $/1M | Output $/1M | Notes |
+|---|---|---|---|---|---|---|
+| GPT-5.2 | `gpt-5.2` | 400K | 128K | $1.75 | $14.00 | Flagship reasoning model |
+| GPT-5 | `gpt-5` | 400K | 128K | ~$1.00 | ~$8.00 | Default workhorse, replaced GPT-4o |
+| GPT-5 mini | `gpt-5-mini` | 400K | 128K | $0.25 | $2.00 | Cost-efficient mid-tier |
+| GPT-5 nano | `gpt-5-nano` | 400K | 128K | $0.05 | $0.40 | Cheapest/fastest, used as Wayne's lightweight model |
 
 ### Legacy Models (Deprecated — avoid in new code)
 

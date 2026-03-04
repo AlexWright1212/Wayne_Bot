@@ -286,7 +286,7 @@ class LLMProvider(Protocol):
         messages: list[ChatMessage],
         model_id: str,
         reasoning_level: str | None = None,
-        tools: list[ToolSchema] | None = None,
+        tools: list[dict] | None = None,  # Provider-specific format, pre-translated by ToolFramework
     ) -> AsyncIterator[StreamEvent]: ...
 
     async def complete(
@@ -336,7 +336,7 @@ class ToolFramework:
         self, tool_name: str, arguments: dict, context: ToolContext,
         on_step: Callable[[ToolStep], Awaitable[None]],
     ) -> ToolResult: ...
-    def supports_tools(self, model_id: str) -> bool: ...
+    def supports_tools(self, model_id: str, provider: str) -> bool: ...
 ```
 
 ### 3.3 WebSocket Protocol
@@ -359,7 +359,95 @@ title_updated       { type, conversation_id, title }
 error               { type, message, recoverable }
 ```
 
-### 3.4 REST API
+### 3.4 Token Counter & Rolling Summary
+
+```python
+# services/token_counter.py
+
+class TokenCounter:
+    async def count_openai(self, messages: list[ChatMessage]) -> int:
+        """Exact count via tiktoken. Local, no API call."""
+        ...
+
+    async def count_anthropic(
+        self, messages: list[ChatMessage], model_id: str,
+    ) -> int:
+        """Exact count via Anthropic count_tokens API. Network call."""
+        ...
+
+    def count_openrouter(self, messages: list[ChatMessage]) -> int:
+        """Heuristic: characters / 3.5. Local, no API call."""
+        ...
+
+    async def count_for_provider(
+        self, messages: list[ChatMessage], provider: str, model_id: str,
+    ) -> int:
+        """Dispatch to the counting method matching the active provider."""
+        ...
+
+    def get_context_window(self, model_id: str, provider: str) -> int:
+        """Return context window size in tokens for the given model."""
+        ...
+```
+
+```python
+# services/rolling_summary.py
+
+@dataclass
+class SummaryResult:
+    summary_text: str
+    summarized_message_ids: list[UUID]
+    tokens_before: int
+    tokens_after: int
+    model_used: str
+
+class RollingSummaryService:
+    async def check_and_summarize(
+        self,
+        conversation_id: UUID,
+        messages: list[ChatMessage],
+        model_id: str,
+        provider: str,
+        db: AsyncSession,
+    ) -> tuple[list[ChatMessage], SummaryResult | None]:
+        """Check if token count exceeds 80% of model's context window.
+
+        If threshold exceeded: summarize oldest messages using lightweight model,
+        persist the summary, return compressed messages list + SummaryResult.
+        If not exceeded: return messages unchanged + None.
+        """
+        ...
+```
+
+### 3.5 Visibility Service
+
+```python
+# services/visibility.py
+
+class VisibilityService:
+    async def capture(
+        self,
+        message_id: UUID,
+        request_payload: dict,
+        response_metadata: dict,
+        messages: list[ChatMessage],
+        model_id: str,
+        provider: str,
+        reasoning_content: str | None = None,
+        summary_event: SummaryResult | None = None,
+        tool_trace: list[ToolStep] | None = None,
+        db: AsyncSession,
+    ) -> UUID:
+        """Capture visibility data for an assistant message.
+
+        Active provider token count is computed synchronously.
+        Non-active provider counts are fired as background tasks.
+        Returns the visibility record ID.
+        """
+        ...
+```
+
+### 3.6 REST API
 
 ```
 POST   /api/conversations                         → ConversationResponse
@@ -388,7 +476,7 @@ WS     /ws/{conversation_id}
 | | |
 |---|---|
 | **Spec sections** | §2.1, §7.1, §9, §10, §14 |
-| **Creates** | docker-compose.yml, alembic.ini, .env.example, config.py, database.py, exceptions.py, all ORM models, base schemas, system_prompt.py, main.py shell, migrations, conftest.py, factories.py |
+| **Creates** | pyproject.toml, docker-compose.yml, alembic.ini, .env.example, config.py, database.py, exceptions.py, all ORM models, base schemas, system_prompt.py, main.py shell, migrations, conftest.py, factories.py |
 | **Depends on** | Nothing |
 | **Exposes** | `get_db()`, `Settings`, `SYSTEM_PROMPT`, all SQLAlchemy models, base Pydantic schemas |
 | **Verification** | `docker compose up -d` starts Postgres. `alembic upgrade head` succeeds. `pytest` with a basic DB connectivity test passes. FastAPI starts and serves `GET /api/health`. |
@@ -413,6 +501,8 @@ WS     /ws/{conversation_id}
 | **Exposes** | Conversation CRUD API, WebSocket endpoint, `ChatService.handle_user_message()` |
 | **Verification** | Integration tests: create conversation, send message (mocked provider), verify persistence. WebSocket test: connect, send, receive stream events. Auto-title fires after first exchange. |
 
+**Auto-title visibility convention:** The auto-title LLM call's prompt and response are stored in the `response_metadata` JSONB of the visibility record for the first assistant message in the conversation (since auto-titling fires after that exchange). No dedicated column or table needed.
+
 ### Unit S — Rolling Summary
 
 | | |
@@ -433,15 +523,16 @@ WS     /ws/{conversation_id}
 | **Exposes** | `ToolFramework` (register, get_schemas, execute), `WebSearchTool` |
 | **Verification** | Unit test tool registration + schema normalization for all 3 providers. Unit test deterministic filters. Integration test full harness with mocked Tavily + mocked lightweight LLM. Test failure paths: Tavily retry/abort, coverage loop cap. |
 
-### Unit V — Visibility Layer
+### Unit V — Visibility Layer + Integration Wiring
 
 | | |
 |---|---|
 | **Spec sections** | §6.1–6.3, §4.6, §5.5 |
 | **Creates** | `services/visibility.py`, `routes/visibility.py`, `schemas/visibility.py`, tests |
-| **Depends on** | Unit F + Unit S (token counter) |
+| **Modifies** | `services/chat.py`, `routes/ws.py` (wiring S, T, V into the chat orchestrator) |
+| **Depends on** | Unit F + Unit P + Unit C + Unit S + Unit T |
 | **Exposes** | `VisibilityService.capture()`, `GET /api/messages/{id}/visibility`, `GET /api/conversations/{id}/token-counts` |
-| **Verification** | Integration test: after chat exchange, visibility record exists with all fields. Test async token count population. API endpoint returns correct data. |
+| **Verification** | **Phase A (Visibility):** Integration test: after chat exchange, visibility record exists with all fields. Test async token count population. API endpoint returns correct data. **Phase B (Wiring):** Full integration test: send message → rolling summary triggers when threshold exceeded → search tool fires via tool calling → visibility captured for all steps. All 3 subsystems (S, T, V) functioning through the chat orchestrator. |
 
 ### Unit FE — Frontend
 
@@ -466,11 +557,9 @@ Phase 3: Unit C  (Chat Core — basic chat loop works end-to-end)
 Phase 4: Unit S  (Rolling Summary)  ← can parallel with Unit T
 Phase 4: Unit T  (Tool Framework + Web Search)  ← can parallel with Unit S
     ↓
-Phase 5: Unit V  (Visibility Layer)
+Phase 5: Unit V  (Visibility Layer + wire S, T, V into chat orchestrator)
     ↓
-Phase 6: Unit C+ (Wire S, T, V into chat orchestrator)
-    ↓
-Phase 7: Unit FE (Frontend)
+Phase 6: Unit FE (Frontend)
 ```
 
 **Milestones:**
@@ -480,9 +569,8 @@ Phase 7: Unit FE (Frontend)
 | 2 | Can call any LLM provider programmatically, model list API works |
 | 3 | Can chat via WebSocket, messages persist, auto-title works |
 | 4 | Rolling summary triggers; web search harness runs end-to-end |
-| 5 | Visibility data captured and queryable |
-| 6 | Full backend — all features wired together |
-| 7 | Complete app with UI |
+| 5 | Visibility data captured and queryable; full backend — all features wired together |
+| 6 | Complete app with UI |
 
 ---
 
@@ -562,6 +650,6 @@ Standard `logging` module. Each module: `logger = logging.getLogger(__name__)`. 
 Each sub-plan will include its own test suite. The overall verification sequence:
 
 1. **Per-unit:** Each subsystem passes its own tests before the next begins
-2. **Integration (Phase 6):** Full chat flow with all features wired together — send message → rolling summary triggers → search tool fires → visibility captured
-3. **End-to-end (Phase 7):** Frontend connects, all user flows work, acceptance criteria from spec §12 verified
+2. **Integration (Phase 5):** Full chat flow with all features wired together — send message → rolling summary triggers → search tool fires → visibility captured
+3. **End-to-end (Phase 6):** Frontend connects, all user flows work, acceptance criteria from spec §12 verified
 4. **Final:** All 15 acceptance criteria (spec §12) checked off
