@@ -259,3 +259,25 @@ Write a small test file `tests/unit/test_foundation.py`:
 8. `pytest` passes with DB connectivity test, CRUD operations, and cascade delete
 9. `get_db()` yields a working async session with commit/rollback behavior
 10. `.env.example` documents all required environment variables
+
+## Implementation Notes
+
+### asyncpg engine must be created per-test, not at module level
+
+asyncpg connection pools are bound to the event loop they were created on. pytest-asyncio 0.24 creates a new event loop per test function. A module-level `create_async_engine()` works for the first test, then every subsequent async DB test fails with `RuntimeError: Event loop is closed`.
+
+The implemented `conftest.py` creates a fresh engine inside the `db_session` fixture (create → create_all → yield session → drop_all → dispose), all within one fixture invocation. **All future units adding DB test fixtures must follow this same per-test engine pattern.** Do not refactor to a module-level engine.
+
+### `src/__init__.py` is required but absent from the Files to Create list
+
+The file list omits `src/__init__.py`. Without it, `src.backend` is not a proper Python package and all `from src.backend.*` imports fail with `ModuleNotFoundError: No module named 'src'`. It has been created (empty file).
+
+### Alembic env.py requires explicit sys.path insertion
+
+Alembic runs `env.py` without the project root on `sys.path`, so `from src.backend.config import settings` fails. The fix — already in the committed `env.py` — is:
+
+```python
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+```
+
+`parents[3]` from `src/backend/migrations/env.py` resolves to the project root. If the migrations directory is ever moved, this depth must be recalculated.
