@@ -7,7 +7,7 @@ from src.backend.schemas.messages import MessageResponse
 
 
 class ConversationCreate(BaseModel):
-    pass
+    title: str | None = None
 
 
 class ConversationUpdate(BaseModel):
@@ -30,6 +30,8 @@ class ConversationSummary(BaseModel):
 
     id: uuid.UUID
     title: str | None = None
+    last_model_id: str | None = None
+    last_provider: str | None = None
     updated_at: datetime
 
 
