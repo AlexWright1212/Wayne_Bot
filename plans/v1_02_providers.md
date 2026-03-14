@@ -200,3 +200,17 @@ Use `respx` to mock HTTP responses at the transport level. Each provider gets it
 7. `GET /api/models` returns all providers with availability status and model lists
 8. `GET /api/models/openrouter/refresh` triggers a fresh fetch of OpenRouter models
 9. All provider tests pass with mocked HTTP (no real API calls)
+
+## Implementation Notes
+
+### Mocking async SDK methods in tests
+
+The OpenAI and Anthropic SDKs expose async methods (`create`, `stream`). Tests must use `AsyncMock` as the replacement (not `patch(return_value=...)` which creates a sync `MagicMock`). For streaming tests, a custom `_AsyncChunkIterator` class wraps a list of mock chunks into a proper async iterator.
+
+### runtime_checkable Protocol with async methods
+
+`isinstance(provider, LLMProvider)` may hang or produce no output in Python 3.13. The Protocol still works structurally — just don't use runtime isinstance checks. Tests verify behavior directly instead.
+
+### Anthropic max_tokens
+
+The Anthropic provider hardcodes `max_tokens=8192` in both `stream_chat` and `complete`. Downstream units that need longer outputs (unlikely for v1) would need to add a parameter for this.

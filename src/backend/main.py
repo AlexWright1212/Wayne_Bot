@@ -9,6 +9,7 @@ from sqlalchemy import text
 from src.backend.config import settings
 from src.backend.database import engine
 from src.backend.exceptions import WayneError, wayne_error_handler
+from src.backend.routes.models import router as models_router
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(models_router, prefix="/api")
 
 
 @app.get("/api/health")
