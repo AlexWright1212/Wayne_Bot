@@ -39,7 +39,7 @@ The spec says "accumulate message pairs (user + assistant)" but tool-calling con
 
 ### tiktoken encoding selection
 
-Use `tiktoken.encoding_for_model()` which handles model-to-encoding mapping. Wrap in a try/except — if the GPT-5 model IDs aren't recognized by the installed tiktoken version, fall back to `cl200k_base` (the encoding used by recent OpenAI models). Log a warning on fallback.
+Use `tiktoken.encoding_for_model()` which handles model-to-encoding mapping. Wrap in a try/except — if the GPT-5 model IDs aren't recognized by the installed tiktoken version, fall back to `o200k_base` (the encoding used by GPT-4o and newer models). Log a warning on fallback.
 
 ## Implementation Steps
 
