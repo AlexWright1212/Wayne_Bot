@@ -212,3 +212,25 @@ WebSocket endpoint at `/ws/{conversation_id}`.
 9. Auto-titling failures are silent — no user-facing error
 10. Provider errors during streaming result in a recoverable error event, not a crash
 11. All tests pass with mocked providers (no real LLM calls)
+
+## Implementation Notes
+
+### `stream_chat` is an async generator — don't `await` it
+
+All three providers implement `stream_chat` with `yield` statements. Calling `provider.stream_chat(...)` returns the async generator directly; using `await` raises `TypeError: object async_generator can't be used in 'await' expression`. Use `async for event in provider.stream_chat(...)` without `await`.
+
+### `TIMESTAMP WITHOUT TIME ZONE` requires naive datetimes
+
+When manually setting `updated_at` on a `Conversation` ORM object (for sidebar ordering), use `datetime.now(UTC).replace(tzinfo=None)` — not `datetime.now(UTC)`. asyncpg rejects timezone-aware datetimes for `TIMESTAMP WITHOUT TIME ZONE` columns with `can't subtract offset-naive and offset-aware datetimes`.
+
+### Unit-testing `_to_chat_message` — use `SimpleNamespace`
+
+SQLAlchemy model instances created with `Model.__new__(Model)` fail when setting attributes because the ORM mapper is not initialized. For unit tests of pure attribute-reading logic, `types.SimpleNamespace` is a clean drop-in that avoids any DB dependency.
+
+### Service singletons live in `deps.py`
+
+All services (`ConversationService`, `AutoTitleService`, `ChatService`) are instantiated once at module import time in `src/backend/deps.py` and exposed via `get_*` getter functions used with FastAPI `Depends`. Tests patch service methods directly (e.g., `mock.generate_title = AsyncMock(...)`) rather than overriding `app.dependency_overrides`.
+
+### WS route uses `async_session_factory()` directly
+
+The WebSocket route creates DB sessions via `async_session_factory()` (not `Depends(get_db)`) to enable per-operation sessions within a long-lived connection. This means WS behavior cannot be tested via the standard `client` fixture (which overrides `get_db`). Integration tests for the chat logic hit `ChatService` directly with the `db_session` fixture instead.

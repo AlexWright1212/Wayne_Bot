@@ -75,7 +75,7 @@ class ChatService:
         accumulated_reasoning = ""
 
         try:
-            async for event in await provider.stream_chat(
+            async for event in provider.stream_chat(
                 messages=messages,
                 model_id=model_id,
                 reasoning_level=reasoning_level,
