@@ -12,11 +12,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.backend.config import settings
 from src.backend.models.message import MessageRole
 from src.backend.providers.base import ChatMessage, CompletionResult, StreamEvent
 from src.backend.services.auto_title import AutoTitleService
 from src.backend.services.chat import ChatService
 from src.backend.services.conversation import ConversationService
+from src.backend.services.rolling_summary import RollingSummaryService
+from src.backend.services.token_counter import TokenCounter
+from src.backend.services.visibility import VisibilityService
+from src.backend.tools.framework import ToolFramework
 
 
 def _make_mock_provider(tokens: list[str] = ("Hello", " world"), metadata: dict | None = None):
@@ -43,26 +48,39 @@ def _make_mock_registry(provider):
     return registry
 
 
-@pytest.fixture
-def conv_service():
-    return ConversationService()
+def _make_chat_service(
+    registry,
+    conv_svc: ConversationService,
+    auto_title_svc,
+) -> ChatService:
+    """Build a ChatService with minimal no-op mocks for the new Unit S/T/V dependencies."""
+    token_counter = MagicMock(spec=TokenCounter)
+    # Make count_for_provider a coroutine returning a low count (threshold won't trigger)
+    token_counter.count_for_provider = AsyncMock(return_value=100)
+    token_counter.get_context_window = MagicMock(return_value=200_000)
 
+    rolling_summary_svc = MagicMock(spec=RollingSummaryService)
+    # Return messages unchanged, no summary triggered
+    rolling_summary_svc.check_and_summarize = AsyncMock(
+        side_effect=lambda conversation_id, messages, model_id, provider, db: (messages, None)
+    )
 
-@pytest.fixture
-def mock_auto_title():
-    svc = MagicMock(spec=AutoTitleService)
-    svc.generate_title = AsyncMock(return_value=None)  # no-op by default
-    return svc
+    tool_framework = ToolFramework()  # Empty framework — no tools registered
 
+    visibility_svc = MagicMock(spec=VisibilityService)
+    visibility_svc.capture = AsyncMock(return_value=uuid.uuid4())
+    visibility_svc.update_auto_title_data = AsyncMock(return_value=None)
 
-@pytest.fixture
-def chat_service(mock_auto_title):
-    def _make(provider):
-        registry = _make_mock_registry(provider)
-        conv_svc = ConversationService()
-        return ChatService(registry, conv_svc, mock_auto_title), conv_svc
-
-    return _make
+    return ChatService(
+        provider_registry=registry,
+        conversation_service=conv_svc,
+        auto_title_service=auto_title_svc,
+        rolling_summary_service=rolling_summary_svc,
+        tool_framework=tool_framework,
+        visibility_service=visibility_svc,
+        token_counter=token_counter,
+        settings=settings,
+    )
 
 
 class TestChatServiceFlow:
@@ -75,7 +93,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value=None)
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
 
@@ -90,7 +108,7 @@ class TestChatServiceFlow:
         ):
             events.append(event)
 
-        # Verify event sequence
+        # Verify event sequence (may have summary_started/complete from pre-check)
         types = [e.type for e in events]
         assert types.count("token") == 2
         assert types[-1] == "done"
@@ -127,7 +145,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value=None)
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
 
@@ -177,7 +195,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value=None)
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
         assert conv.last_model_id is None
@@ -204,7 +222,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value="My Title")
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
         received_titles = []
@@ -213,9 +231,10 @@ class TestChatServiceFlow:
             received_titles.append(title)
 
         # Patch _run_auto_title to call on_title_updated directly (avoids fresh DB session)
-        original_run = svc._run_auto_title
-
-        async def patched_run(conversation_id, user_content, assistant_content, on_title_updated):
+        async def patched_run(
+            conversation_id, first_assistant_msg_id, user_content, assistant_content,
+            on_title_updated,
+        ):
             title = await auto_title_svc.generate_title(
                 conversation_id=conversation_id,
                 user_message=user_content,
@@ -258,7 +277,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value=None)
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
 
@@ -309,7 +328,7 @@ class TestChatServiceFlow:
         conv_svc = ConversationService()
         auto_title_svc = MagicMock(spec=AutoTitleService)
         auto_title_svc.generate_title = AsyncMock(return_value=None)
-        svc = ChatService(registry, conv_svc, auto_title_svc)
+        svc = _make_chat_service(registry, conv_svc, auto_title_svc)
 
         conv = await conv_svc.create(db_session)
 

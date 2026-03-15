@@ -57,9 +57,18 @@ class ChatMessage:
 
 @dataclass
 class StreamEvent:
-    """A single event from a streaming LLM response."""
+    """A single event from a streaming LLM response.
 
-    type: Literal["token", "tool_call", "reasoning", "done", "error"]
+    Provider-emitted types: token, tool_call, reasoning, done, error.
+    Chat-service internal types: summary_started, summary_complete, tool_call_start,
+        tool_step, _tool_task_ref (intercepted by WS handler, never forwarded to client).
+    """
+
+    type: Literal[
+        "token", "tool_call", "reasoning", "done", "error",
+        "summary_started", "summary_complete", "tool_call_start",
+        "tool_step", "_tool_task_ref",
+    ]
     content: str = ""
     tool_call: ToolCallData | None = None
     metadata: dict | None = None

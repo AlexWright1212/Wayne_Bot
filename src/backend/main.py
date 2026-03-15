@@ -11,6 +11,7 @@ from src.backend.database import engine
 from src.backend.exceptions import WayneError, wayne_error_handler
 from src.backend.routes.conversations import router as conversations_router
 from src.backend.routes.models import router as models_router
+from src.backend.routes.visibility import router as visibility_router
 from src.backend.routes.ws import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ app.add_middleware(
 
 app.include_router(models_router, prefix="/api")
 app.include_router(conversations_router, prefix="/api")
+app.include_router(visibility_router)
 app.include_router(ws_router)
 
 

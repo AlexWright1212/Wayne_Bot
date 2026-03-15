@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -12,29 +13,80 @@ from src.backend.deps import get_chat_service, get_conv_service
 from src.backend.exceptions import ProviderError, ProviderKeyMissing
 from src.backend.providers.base import StreamEvent
 from src.backend.schemas.ws import WSClientMessage
+from src.backend.tools.base import ToolStep
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
 
 
-def _translate_event(event: StreamEvent, conversation_id: uuid.UUID) -> dict:
-    """Convert a StreamEvent to the WebSocket protocol message (master plan §3.3)."""
+def _translate_event(event: StreamEvent, conversation_id: uuid.UUID) -> dict | None:
+    """Convert a StreamEvent to the WebSocket protocol message (master plan §3.3).
+
+    Returns None for internal events that should NOT be forwarded to the client.
+    """
     if event.type == "token":
         return {"type": "stream_token", "content": event.content}
+
     if event.type == "reasoning":
         return {"type": "stream_reasoning", "content": event.content}
+
     if event.type == "done":
         meta = event.metadata or {}
         return {
             "type": "stream_done",
             "message_id": meta.get("message_id"),
-            "visibility_id": meta.get("visibility_id"),  # populated by Unit V
-            "token_counts": meta.get("token_counts"),  # populated by Unit V
-            "context_utilization": meta.get("context_utilization"),  # populated by Unit V
+            "visibility_id": meta.get("visibility_id"),
+            "token_counts": meta.get("token_counts"),
+            "context_utilization": meta.get("context_utilization"),
         }
+
     if event.type == "error":
-        return {"type": "error", "message": event.error or "Unknown error", "recoverable": True}
+        return {
+            "type": "error",
+            "message": event.error or "Unknown error",
+            "recoverable": True,
+        }
+
+    if event.type == "summary_started":
+        return {"type": "summary_started"}
+
+    if event.type == "summary_complete":
+        return {"type": "summary_complete"}
+
+    if event.type == "tool_call_start":
+        tc = event.tool_call
+        arguments = {}
+        if tc:
+            try:
+                arguments = json.loads(tc.arguments) if tc.arguments else {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+        return {
+            "type": "tool_call_start",
+            "tool_name": tc.name if tc else "",
+            "arguments": arguments,
+        }
+
+    if event.type == "tool_step":
+        meta = event.metadata or {}
+        step: ToolStep | None = meta.get("step")
+        idx = meta.get("index", 0)
+        if step is None:
+            return None
+        return {
+            "type": "tool_step",
+            "step_name": step.name,
+            "step_index": idx,
+            "status": step.status,
+            "data": step.data,
+            "duration_ms": step.duration_ms,
+        }
+
+    if event.type == "_tool_task_ref":
+        # Internal event — intercepted by the WS handler, never forwarded
+        return None
+
     # Unrecognized event types pass through as-is for forward-compatibility
     return {"type": event.type, "content": event.content}
 
@@ -77,6 +129,7 @@ async def websocket_endpoint(
                 except Exception:
                     pass  # WS may have closed between title generation and send
 
+            active_tool_task = None
             async with async_session_factory() as db:
                 try:
                     async for event in chat_service.handle_user_message(
@@ -88,8 +141,16 @@ async def websocket_endpoint(
                         db=db,
                         on_title_updated=on_title_updated,
                     ):
+                        # Intercept _tool_task_ref — store locally, don't forward
+                        if event.type == "_tool_task_ref":
+                            meta = event.metadata or {}
+                            active_tool_task = meta.get("task")
+                            continue
+
                         ws_msg = _translate_event(event, conversation_id)
-                        await websocket.send_json(ws_msg)
+                        if ws_msg is not None:
+                            await websocket.send_json(ws_msg)
+
                     await db.commit()
                 except (ProviderError, ProviderKeyMissing) as exc:
                     await db.rollback()
@@ -113,6 +174,10 @@ async def websocket_endpoint(
                             "recoverable": True,
                         }
                     )
+                finally:
+                    # Cancel any in-flight tool task on disconnect or error
+                    if active_tool_task and not active_tool_task.done():
+                        active_tool_task.cancel()
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: conversation %s", conversation_id)
