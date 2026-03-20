@@ -1,11 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch",
-      "Bash(python3:*)",
-      "Bash(powershell.exe:*)",
-      "Bash(poetry run:*)",
-      "Bash(mkdir:*)"
+      "Bash(grep -v '^\\\\.$')",
+      "Skill(shadcn)",
+      "Bash(node:*)",
+      "Bash(for f:*)",
+      "Bash(do sed:*)",
+      "Bash(done)"
     ]
   }
 }

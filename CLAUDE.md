@@ -18,6 +18,6 @@ Key facts that are easy to get wrong:
 - `src/` — Source code (Python backend, React frontend)
 - `plans/` — Implementation plans (created during plan mode)
 
-## Spec-Driven Development
+## ShadCN
 
-This project uses spec-driven development. The specs in `spec/` should be utilized for building implementation plans and refernced regularly. Implementation plans should reference the spec. Changes to scope require updating the spec first.
+- **Mandatory Skill Use** - This project uses ShadCN for ALL UI work. You MUST ALWAYS refernce the ShadCN skill when working on frontend, React, or UI creation tasks.
