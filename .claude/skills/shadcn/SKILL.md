@@ -14,7 +14,7 @@ A framework for building ui, components and design systems. Components are added
 ## Current Project Context
 
 ```json
-!`npx shadcn@latest info --json`
+!`cd "C:/Code/wayne_bot/src/frontend" && npx shadcn@latest info --json`
 ```
 
 The JSON above contains the project config and installed components. Use `npx shadcn@latest docs <component>` to get documentation and example URLs for any component.
@@ -22,6 +22,7 @@ The JSON above contains the project config and installed components. Use `npx sh
 ## Principles
 
 1. **Use existing components first.** Use `npx shadcn@latest search` to check registries before writing custom UI. Check community registries too.
+   > **Registry access:** MCP tools (`mcp__shadcn__*`) only work with `@shadcn`. Community registries (`@assistant-ui`, `@shadcnblocks`, `@cult-ui`) must be searched and installed via CLI (`npx shadcn@latest search @shadcnblocks -q "..."` / `npx shadcn@latest add <url>`). Do not attempt MCP list/search for community registries.
 2. **Compose, don't reinvent.** Settings page = Tabs + Card + form controls. Dashboard = Sidebar + Card + Chart + Table.
 3. **Use built-in variants before custom styles.** `variant="outline"`, `size="sm"`, etc.
 4. **Use semantic colors.** `bg-primary`, `text-muted-foreground` — never raw values like `bg-blue-500`.
