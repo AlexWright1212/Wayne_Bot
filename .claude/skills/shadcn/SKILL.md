@@ -9,6 +9,8 @@ allowed-tools: Bash(npx shadcn@latest *), Bash(pnpm dlx shadcn@latest *), Bash(b
 
 A framework for building ui, components and design systems. Components are added as source code to the user's project via the CLI.
 
+> **CRITICAL:** This skill includes reference files with Incorrect/Correct code pairs that **MUST** be read before writing component code. At minimum, read `rules/styling.md` and `rules/composition.md` (relative to this skill's directory) before writing any JSX. The other rule files (`forms.md`, `icons.md`, `base-vs-radix.md`) must be read when working in those areas. The main skill file below is an index — the rule files are the substance.
+
 > **IMPORTANT:** Run all CLI commands using the project's package runner: `npx shadcn@latest`, `pnpm dlx shadcn@latest`, or `bunx --bun shadcn@latest` — based on the project's `packageManager`. Examples below use `npx shadcn@latest` but substitute the correct runner for the project.
 
 ## Current Project Context
@@ -54,6 +56,7 @@ These rules are **always enforced**. Each links to a file with Incorrect/Correct
 
 - **Items always inside their Group.** `SelectItem` → `SelectGroup`. `DropdownMenuItem` → `DropdownMenuGroup`. `CommandItem` → `CommandGroup`.
 - **Use `asChild` (radix) or `render` (base) for custom triggers.** Check `base` field from `npx shadcn@latest info`. → [base-vs-radix.md](./rules/base-vs-radix.md)
+  > **Note:** Registry metadata (e.g. `mcp__shadcn__view_items`) may list `radix-ui` as a dependency even for `base-nova` projects. Don't trust it — read the actual installed `.tsx` file to confirm which primitive (`@base-ui/react` vs `@radix-ui`) was used.
 - **Dialog, Sheet, and Drawer always need a Title.** `DialogTitle`, `SheetTitle`, `DrawerTitle` required for accessibility. Use `className="sr-only"` if visually hidden.
 - **Use full Card composition.** `CardHeader`/`CardTitle`/`CardDescription`/`CardContent`/`CardFooter`. Don't dump everything in `CardContent`.
 - **Button has no `isPending`/`isLoading`.** Compose with `Spinner` + `data-icon` + `disabled`.

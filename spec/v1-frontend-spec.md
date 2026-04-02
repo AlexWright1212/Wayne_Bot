@@ -237,18 +237,7 @@ Always visible when the pane is open, not collapsible, not message-scoped:
 
 ---
 
-## 8. Aesthetic Direction
-
-- **Reference:** Cursor. Angular, rectangular, small dynamic elements. Clear lines and borders. Dense information presented cleanly.
-- **Dark mode only** for v1.
-- **Rounded corners:** Acceptable in moderation, but the overall feel should be rectangular and structured. Prioritize organization over softness.
-- **Typography:** Clean, monospace for code and JSON. Sans-serif for UI text. Compact line heights for density.
-- **Color palette:** Dark backgrounds, subtle borders to delineate sections. Muted text for secondary information (metadata, footers). Slightly lighter/dimmer text for thinking indicators. Warning/error colors for error states and missing API keys.
-- **Information density:** Favor showing more on screen over whitespace. Tabs and their content are compact. Collapsibility is the primary tool for managing density — show headers, hide bodies until needed.
-
----
-
-## 9. Delegated Decisions
+## 8. Delegated Decisions
 
 The following were explicitly left to the builder's judgment:
 
@@ -267,7 +256,7 @@ The following were explicitly left to the builder's judgment:
 
 ---
 
-## 10. Technical Notes
+## 9. Technical Notes
 
 - **Backend surface area:** `docs/frontend_surface_area.md` contains the complete API contract with JSON shapes, WebSocket event formats, and edge cases.
 - **State management:** Zustand stores for conversation list, active conversation messages, model catalog, streaming state, and visibility data.
