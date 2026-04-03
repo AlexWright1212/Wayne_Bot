@@ -4,13 +4,8 @@ import { PanelRightIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarHeader,
-  SidebarInset,
-  SidebarTrigger,
-} from "@/components/ui/sidebar"
+import { SidebarInset, SidebarTrigger } from "@/components/ui/sidebar"
+import { AppSidebar } from "@/components/layout/AppSidebar"
 
 export function AppLayout() {
   const [visibilityOpen, setVisibilityOpen] = useState(false)
@@ -18,21 +13,7 @@ export function AppLayout() {
   return (
     <>
       {/* ── Left sidebar ─────────────────────────────────────────── */}
-      <Sidebar collapsible="offcanvas">
-        <SidebarHeader className="border-b border-sidebar-border px-3 py-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Wayne</span>
-            <Button variant="ghost" size="xs">
-              + New Chat
-            </Button>
-          </div>
-        </SidebarHeader>
-        <SidebarContent>
-          <div className="px-3 py-3 text-xs text-muted-foreground">
-            Conversation list
-          </div>
-        </SidebarContent>
-      </Sidebar>
+      <AppSidebar />
 
       {/* ── Main content ─────────────────────────────────────────── */}
       <SidebarInset className="overflow-hidden">
