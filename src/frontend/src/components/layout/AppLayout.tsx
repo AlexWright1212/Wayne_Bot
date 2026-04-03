@@ -1,11 +1,9 @@
 import { useState } from "react"
-import { PanelRightIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
-import { SidebarInset, SidebarTrigger } from "@/components/ui/sidebar"
+import { SidebarInset } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/layout/AppSidebar"
+import { TopBar } from "@/components/layout/TopBar"
 
 export function AppLayout() {
   const [visibilityOpen, setVisibilityOpen] = useState(false)
@@ -19,28 +17,10 @@ export function AppLayout() {
       <SidebarInset className="overflow-hidden">
 
         {/* Top bar */}
-        <header className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
-          <div className="flex items-center gap-2">
-            <SidebarTrigger />
-            <Separator orientation="vertical" className="h-4" />
-            <span className="text-xs text-muted-foreground">
-              Provider · Model · Reasoning
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              400K ctx · 128K max · 0 tok · 0%
-            </span>
-            <Separator orientation="vertical" className="h-4" />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setVisibilityOpen((v) => !v)}
-            >
-              <PanelRightIcon />
-            </Button>
-          </div>
-        </header>
+        <TopBar
+          visibilityOpen={visibilityOpen}
+          onToggleVisibility={() => setVisibilityOpen((v) => !v)}
+        />
 
         {/* Body: chat pane + visibility pane side by side */}
         <div className="flex flex-1 overflow-hidden">
