@@ -14,6 +14,12 @@ import type {
 } from "./types";
 
 // ---------------------------------------------------------------------------
+// 0. Constants
+// ---------------------------------------------------------------------------
+
+export const MOCK_NEW_CHAT_ID = "00000000-0000-0000-0000-000000000001";
+
+// ---------------------------------------------------------------------------
 // 1. Sidebar — Conversation List
 // ---------------------------------------------------------------------------
 
@@ -52,6 +58,14 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     last_model_id: "gpt-5",
     last_provider: "openai",
     updated_at: "2026-03-22T08:45:00Z",
+  },
+  // Empty conversation — use this to preview the empty/new-chat state
+  {
+    id: MOCK_NEW_CHAT_ID,
+    title: null,
+    last_model_id: null,
+    last_provider: null,
+    updated_at: "2026-03-20T00:00:00Z",
   },
 ];
 
@@ -624,4 +638,13 @@ export const MOCK_VISIBILITY: Record<string, VisibilityRecord> = {
   "msg-0004-assistant-llm-intro": VISIBILITY_MSG_0004,
   "msg-0006-assistant-attention": VISIBILITY_MSG_0006,
   "msg-0008-assistant-training": VISIBILITY_MSG_0008,
+};
+
+// ---------------------------------------------------------------------------
+// 6. Messages by Conversation ID
+// ---------------------------------------------------------------------------
+
+// Only the active conversation has mock messages; all others start empty.
+export const MOCK_MESSAGES_BY_CONV: Record<string, Message[]> = {
+  [MOCK_ACTIVE_CONVERSATION_ID]: MOCK_MESSAGES,
 };

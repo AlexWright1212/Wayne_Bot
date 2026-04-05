@@ -10,6 +10,31 @@
 
 ---
 
+## Build Progress
+
+- [x] Layout shell
+- [x] Sidebar
+- [x] Top bar
+- [x] Chat input + empty state
+- [ ] Chat messages
+- [ ] Visibility pane shell
+- [ ] Visibility pane — simple tabs
+- [ ] Visibility pane — complex tabs
+
+### Handoff Notes (updated 2026-04-05)
+- Visibility pane: fixed 400px width, CSS `transition-all` on width toggle. No `Resizable` component — spec didn't require drag-to-resize.
+- `AlertDialogAction` is a plain Button with no auto-close behavior. Close is handled by clearing controlled `open` state. `AlertDialogCancel` does auto-close (wraps `Close` primitive).
+- Badge muted styling: used `className="bg-muted text-muted-foreground"` override rather than a CVA variant. Consider adding a `muted` variant to `badge.tsx` if the pattern recurs.
+- `SidebarContent` has built-in `overflow-auto no-scrollbar` — no need for `ScrollArea` wrapper inside the sidebar.
+- `Select` in this project: `Select = SelectPrimitive.Root` directly, **no `items` prop** needed. Standard JSX composition. `alignItemWithTrigger={false}` on `SelectContent` for dropdown positioning.
+- Base UI Select `onValueChange` receives `string | null` — always guard with `(v) => v && handler(v)` before passing to store setters.
+- **Zustand stores** at `src/stores/`: `useConversationStore` (conversations, active ID, messages by conv ID, newChat/rename/delete/addUserMessage) and `useModelStore` (catalog, provider, modelId, reasoningLevel). AppSidebar and TopBar are wired to these stores; AppLayout reads from conversation store.
+- **Empty state mock**: `MOCK_NEW_CHAT_ID` + a null-title conversation appended to `MOCK_CONVERSATIONS`. `MOCK_MESSAGES_BY_CONV` keyed by conversation ID — only the active conversation has messages. Selecting the "New Chat" entry shows `ChatEmpty`. Sending a message calls `addUserMessage` and transitions away from empty state.
+- **`ChatInput`**: uses CSS `field-sizing-content` (already in Textarea base class) for auto-grow — no JS height logic needed. `min-h-[36px]`, `max-h-[200px]`, `overflow-y-auto`.
+- `Textarea` component already has `field-sizing-content` in its base class — auto-grows without JS. Override `min-h-16` default with `min-h-[36px]` for compact chat input.
+
+---
+
 ## Build Order
 
 1. **Layout shell** — three-pane skeleton (sidebar, chat, visibility) with placeholder content and collapse/expand toggles. All other sections are built inside this container.

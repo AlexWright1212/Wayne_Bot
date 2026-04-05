@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from "react"
-import { PlusIcon } from "lucide-react"
+import { useState, useRef, useEffect } from "react";
+import { PlusIcon } from "lucide-react";
 
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import {
   Sidebar,
   SidebarContent,
@@ -13,14 +13,14 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-} from "@/components/ui/sidebar"
+} from "@/components/ui/sidebar";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuGroup,
   ContextMenuItem,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+} from "@/components/ui/context-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,60 +30,55 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-import { MOCK_CONVERSATIONS, MOCK_ACTIVE_CONVERSATION_ID } from "@/mocks/data"
-import type { Conversation } from "@/mocks/types"
+} from "@/components/ui/alert-dialog";
+import { useConversationStore } from "@/stores/useConversationStore";
+import type { Conversation } from "@/mocks/types";
 
 const PROVIDER_LABEL: Record<string, string> = {
   openai: "OAI",
   anthropic: "ANT",
   openrouter: "OR",
-}
+};
 
 export function AppSidebar() {
-  const [activeId, setActiveId] = useState(MOCK_ACTIVE_CONVERSATION_ID)
-  const [conversations, setConversations] = useState(MOCK_CONVERSATIONS)
-  const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState("")
-  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
-  const renameInputRef = useRef<HTMLInputElement>(null)
+  const conversations = useConversationStore((s) => s.conversations);
+  const activeId = useConversationStore((s) => s.activeConversationId);
+  const setActiveConversation = useConversationStore((s) => s.setActiveConversation);
+  const renameConversation = useConversationStore((s) => s.renameConversation);
+  const deleteConversation = useConversationStore((s) => s.deleteConversation);
+  const newChat = useConversationStore((s) => s.newChat);
+
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (renamingId) {
-      renameInputRef.current?.focus()
-      renameInputRef.current?.select()
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
     }
-  }, [renamingId])
+  }, [renamingId]);
 
   function startRename(conv: Conversation) {
-    setRenameValue(conv.title ?? "")
-    setRenamingId(conv.id)
+    setRenameValue(conv.title ?? "");
+    setRenamingId(conv.id);
   }
 
   function commitRename() {
-    if (!renamingId) return
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === renamingId
-          ? { ...c, title: renameValue.trim() || c.title }
-          : c
-      )
-    )
-    setRenamingId(null)
+    if (!renamingId) return;
+    renameConversation(renamingId, renameValue);
+    setRenamingId(null);
   }
 
   function cancelRename() {
-    setRenamingId(null)
+    setRenamingId(null);
   }
 
   function confirmDelete() {
-    if (!deleteTarget) return
-    setConversations((prev) => prev.filter((c) => c.id !== deleteTarget.id))
-    if (activeId === deleteTarget.id) {
-      const remaining = conversations.filter((c) => c.id !== deleteTarget.id)
-      setActiveId(remaining[0]?.id ?? "")
-    }
-    setDeleteTarget(null)
+    if (!deleteTarget) return;
+    deleteConversation(deleteTarget.id);
+    setDeleteTarget(null);
   }
 
   return (
@@ -94,6 +89,7 @@ export function AppSidebar() {
             variant="outline"
             size="sm"
             className="w-full justify-start"
+            onClick={newChat}
           >
             <PlusIcon data-icon="inline-start" />
             New Chat
@@ -112,8 +108,8 @@ export function AppSidebar() {
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename()
-                          if (e.key === "Escape") cancelRename()
+                          if (e.key === "Enter") commitRename();
+                          if (e.key === "Escape") cancelRename();
                         }}
                         onBlur={commitRename}
                         className="h-7 text-xs"
@@ -125,7 +121,7 @@ export function AppSidebar() {
                         <SidebarMenuButton
                           isActive={activeId === conv.id}
                           size="sm"
-                          onClick={() => setActiveId(conv.id)}
+                          onClick={() => setActiveConversation(conv.id)}
                           className={cn(
                             "gap-1.5",
                             activeId === conv.id && "font-normal"
@@ -189,5 +185,5 @@ export function AppSidebar() {
         </AlertDialogContent>
       </AlertDialog>
     </>
-  )
+  );
 }
