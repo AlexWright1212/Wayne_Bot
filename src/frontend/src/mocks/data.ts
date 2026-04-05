@@ -644,7 +644,10 @@ export const MOCK_VISIBILITY: Record<string, VisibilityRecord> = {
 // 6. Messages by Conversation ID
 // ---------------------------------------------------------------------------
 
-// Only the active conversation has mock messages; all others start empty.
-export const MOCK_MESSAGES_BY_CONV: Record<string, Message[]> = {
-  [MOCK_ACTIVE_CONVERSATION_ID]: MOCK_MESSAGES,
-};
+// All named conversations share the same mock messages for visual testing.
+// Only the placeholder "New Chat" entry starts empty.
+export const MOCK_MESSAGES_BY_CONV: Record<string, Message[]> = Object.fromEntries(
+  MOCK_CONVERSATIONS
+    .filter((c) => c.title !== null)
+    .map((c) => [c.id, MOCK_MESSAGES])
+);
