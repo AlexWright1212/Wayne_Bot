@@ -29,7 +29,7 @@ export function AppLayout() {
       <AppSidebar />
 
       {/* ── Main content ─────────────────────────────────────────── */}
-      <SidebarInset className="overflow-hidden">
+      <SidebarInset className="h-svh overflow-hidden">
 
         {/* Top bar */}
         <TopBar />
