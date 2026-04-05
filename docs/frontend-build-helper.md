@@ -1,6 +1,12 @@
 # Frontend Build Helper
 
-Handoff doc for the Phase 4 iterative implementor. Written during phases 2–3.
+## Key File Paths
+
+- App spec: `C:\Code\wayne_bot\spec\v1-spec.md`
+- Frontend spec: `C:\Code\wayne_bot\spec\v1-frontend-spec.md`
+- Frontend design doc: `C:\Code\wayne_bot\docs\frontend-design-doc.md`
+- Frontend mock data: `C:\Code\wayne_bot\src\frontend\src\mocks`
+- ShadCN Skill (global skill): invoke when required
 
 ---
 

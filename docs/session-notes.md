@@ -1,2 +1,1 @@
 concerns:
-- should give model paths to each thing up front so it can grab ones it needs as it needs them - veyr important to check if this actually works. otherwise, maybe tell skill to prompt me with what it needs each step so model doesnt default to looking around
