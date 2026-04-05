@@ -16,7 +16,7 @@
 - [x] Sidebar
 - [x] Top bar
 - [x] Chat input + empty state
-- [ ] Chat messages
+- [x] Chat messages
 - [ ] Visibility pane shell
 - [ ] Visibility pane — simple tabs
 - [ ] Visibility pane — complex tabs
@@ -28,6 +28,11 @@
 - `SidebarContent` has built-in `overflow-auto no-scrollbar` — no need for `ScrollArea` wrapper inside the sidebar.
 - `Select` in this project: `Select = SelectPrimitive.Root` directly, **no `items` prop** needed. Standard JSX composition. `alignItemWithTrigger={false}` on `SelectContent` for dropdown positioning.
 - Base UI Select `onValueChange` receives `string | null` — always guard with `(v) => v && handler(v)` before passing to store setters.
+- **Visibility pane state** (`visibilityOpen`, `selectedVisibilityMessageId`, `openVisibility`, `closeVisibility`, `toggleVisibility`) lives in `useConversationStore`. TopBar calls `toggleVisibility`; AssistantMessage's Inspect button calls `openVisibility(messageId)`. TopBar no longer takes props.
+- **react-markdown v10 + rehype-highlight**: override `pre` for block-code wrapper (dark bg + copy button). Distinguish inline vs block `code` by checking `className?.includes('language-')`. Block code without a language label gets inline styling (acceptable trade-off).
+- **highlight.js CSS**: imported in `main.tsx` (`github-dark-dimmed.css`). Override `.hljs { background: transparent }` in `index.css` so the container controls background.
+- **ChatMessages**: filters `allMessages` to `user` + `assistant` roles. Tool call/result messages are NOT rendered directly — their data is surfaced via the `tool_trace` in the visibility record (`MOCK_VISIBILITY[message.id]`).
+- `useConversationStore.visibilityOpen` is the source of truth for the visibility pane toggle state.
 - **Zustand stores** at `src/stores/`: `useConversationStore` (conversations, active ID, messages by conv ID, newChat/rename/delete/addUserMessage) and `useModelStore` (catalog, provider, modelId, reasoningLevel). AppSidebar and TopBar are wired to these stores; AppLayout reads from conversation store.
 - **Empty state mock**: `MOCK_NEW_CHAT_ID` + a null-title conversation appended to `MOCK_CONVERSATIONS`. `MOCK_MESSAGES_BY_CONV` keyed by conversation ID — only the active conversation has messages. Selecting the "New Chat" entry shows `ChatEmpty`. Sending a message calls `addUserMessage` and transitions away from empty state.
 - **`ChatInput`**: uses CSS `field-sizing-content` (already in Textarea base class) for auto-grow — no JS height logic needed. `min-h-[36px]`, `max-h-[200px]`, `overflow-y-auto`.

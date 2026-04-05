@@ -1,17 +1,16 @@
-import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatEmpty } from "@/components/chat/ChatEmpty";
+import { ChatMessages } from "@/components/chat/ChatMessages";
 import { useConversationStore } from "@/stores/useConversationStore";
 
 export function AppLayout() {
-  const [visibilityOpen, setVisibilityOpen] = useState(false);
-
   const activeConversationId = useConversationStore((s) => s.activeConversationId);
   const messagesByConvId = useConversationStore((s) => s.messagesByConvId);
+  const visibilityOpen = useConversationStore((s) => s.visibilityOpen);
   const addUserMessage = useConversationStore((s) => s.addUserMessage);
 
   const activeMessages =
@@ -33,24 +32,14 @@ export function AppLayout() {
       <SidebarInset className="overflow-hidden">
 
         {/* Top bar */}
-        <TopBar
-          visibilityOpen={visibilityOpen}
-          onToggleVisibility={() => setVisibilityOpen((v) => !v)}
-        />
+        <TopBar />
 
         {/* Body: chat pane + visibility pane side by side */}
         <div className="flex flex-1 overflow-hidden">
 
           {/* Chat pane */}
           <div className="flex flex-1 flex-col overflow-hidden bg-card">
-            {/* Messages or empty state */}
-            {hasMessages ? (
-              <div className="flex-1 overflow-y-auto px-5 py-4">
-                <p className="text-sm text-muted-foreground">Chat messages</p>
-              </div>
-            ) : (
-              <ChatEmpty />
-            )}
+            {hasMessages ? <ChatMessages /> : <ChatEmpty />}
 
             {/* Input */}
             <div className="shrink-0 border-t border-border px-3 py-3">

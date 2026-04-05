@@ -11,18 +11,28 @@ interface ConversationStore {
   activeConversationId: string | null;
   messagesByConvId: Record<string, Message[]>;
 
+  // Visibility pane state
+  visibilityOpen: boolean;
+  selectedVisibilityMessageId: string | null;
+
   setActiveConversation: (id: string | null) => void;
   renameConversation: (id: string, title: string) => void;
   deleteConversation: (id: string) => void;
   newChat: () => void;
   /** Mock-only: add a user message and transition away from empty state. */
   addUserMessage: (convId: string, content: string) => void;
+  openVisibility: (messageId: string) => void;
+  closeVisibility: () => void;
+  toggleVisibility: () => void;
 }
 
 export const useConversationStore = create<ConversationStore>((set, get) => ({
   conversations: MOCK_CONVERSATIONS,
   activeConversationId: MOCK_ACTIVE_CONVERSATION_ID,
   messagesByConvId: MOCK_MESSAGES_BY_CONV,
+
+  visibilityOpen: false,
+  selectedVisibilityMessageId: null,
 
   setActiveConversation: (id) => set({ activeConversationId: id }),
 
@@ -58,6 +68,11 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
       messagesByConvId: { ...state.messagesByConvId, [newId]: [] },
     }));
   },
+
+  openVisibility: (messageId) =>
+    set({ visibilityOpen: true, selectedVisibilityMessageId: messageId }),
+  closeVisibility: () => set({ visibilityOpen: false }),
+  toggleVisibility: () => set((s) => ({ visibilityOpen: !s.visibilityOpen })),
 
   addUserMessage: (convId, content) => {
     const existing = get().messagesByConvId[convId] ?? [];

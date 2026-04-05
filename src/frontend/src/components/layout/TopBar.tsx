@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useModelStore } from "@/stores/useModelStore";
+import { useConversationStore } from "@/stores/useConversationStore";
 import { MOCK_TOKEN_COUNTS } from "@/mocks/data";
 import type { Provider } from "@/mocks/types";
 
@@ -38,12 +39,8 @@ const TRIGGER_CLASS =
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
-interface TopBarProps {
-  visibilityOpen: boolean;
-  onToggleVisibility: () => void;
-}
-
-export function TopBar({ visibilityOpen: _, onToggleVisibility }: TopBarProps) {
+export function TopBar() {
+  const toggleVisibility = useConversationStore((s) => s.toggleVisibility);
   const catalog = useModelStore((s) => s.catalog);
   const provider = useModelStore((s) => s.provider);
   const modelId = useModelStore((s) => s.modelId);
@@ -170,7 +167,7 @@ export function TopBar({ visibilityOpen: _, onToggleVisibility }: TopBarProps) {
 
         <Separator orientation="vertical" className="h-4" />
 
-        <Button variant="ghost" size="icon-sm" onClick={onToggleVisibility}>
+        <Button variant="ghost" size="icon-sm" onClick={toggleVisibility}>
           <PanelRightIcon />
         </Button>
       </div>
