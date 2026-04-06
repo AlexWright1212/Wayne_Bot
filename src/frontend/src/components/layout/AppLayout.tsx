@@ -6,6 +6,7 @@ import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatEmpty } from "@/components/chat/ChatEmpty";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { useConversationStore } from "@/stores/useConversationStore";
+import { VisibilityPane } from "@/components/visibility/VisibilityPane";
 
 export function AppLayout() {
   const activeConversationId = useConversationStore((s) => s.activeConversationId);
@@ -55,15 +56,7 @@ export function AppLayout() {
               visibilityOpen ? "w-[400px]" : "w-0"
             )}
           >
-            <div className="shrink-0 border-b border-border px-3 py-2">
-              <p className="text-xs text-muted-foreground">Visibility pane</p>
-            </div>
-            <div className="flex-1 overflow-y-auto px-3 py-3">
-              <p className="text-xs text-muted-foreground">Tab content</p>
-            </div>
-            <div className="shrink-0 border-t border-border px-3 py-2">
-              <p className="text-xs text-muted-foreground">Token totals footer</p>
-            </div>
+            <VisibilityPane />
           </div>
 
         </div>
