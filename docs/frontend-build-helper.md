@@ -20,7 +20,6 @@
 - [x] Visibility pane shell
 - [x] Visibility pane — simple tabs
 - [x] Visibility pane — complex tabs
-- [ ] Minor tweaks (user-led)
 
 ### Handoff Notes (updated 2026-04-05)
 - Visibility pane: fixed 400px width, CSS `transition-all` on width toggle. No `Resizable` component — spec didn't require drag-to-resize.

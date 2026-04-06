@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronRightIcon, EyeOffIcon, CheckIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useConversationStore } from "@/stores/useConversationStore";
+import { useModelStore } from "@/stores/useModelStore";
 import { MOCK_VISIBILITY, MOCK_TOKEN_COUNTS } from "@/mocks/data";
 import type { VisibilityRecord, ToolSchema, HarnessStep } from "@/mocks/types";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -19,6 +20,7 @@ import {
   EmptyTitle,
   EmptyDescription,
 } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 
@@ -866,6 +868,13 @@ export function VisibilityPane() {
     : null;
 
   const tokens = MOCK_TOKEN_COUNTS;
+  const catalog = useModelStore((s) => s.catalog);
+
+  // Per-provider context windows: use the first model in each provider's list.
+  // When the real backend ships, the catalog will already have the right values.
+  const ctxOpenAI = catalog.providers.openai?.models[0]?.context_window ?? 1;
+  const ctxAnthropic = catalog.providers.anthropic?.models[0]?.context_window ?? 1;
+  const ctxOpenRouter = catalog.providers.openrouter?.models[0]?.context_window ?? 1;
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -973,22 +982,37 @@ export function VisibilityPane() {
       {/* Persistent footer — conversation-level token totals */}
       <Separator />
       <div className="shrink-0 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[11px] text-muted-foreground">OAI</span>
-            <span className="font-mono text-[11px] tabular-nums">
+        <div className="flex flex-col gap-1">
+          {/* OpenAI row */}
+          <div className="flex items-center gap-2">
+            <span className="w-6 shrink-0 font-mono text-[11px] text-muted-foreground">OAI</span>
+            <Progress
+              value={tokens.tokens_openai !== null ? (tokens.tokens_openai / ctxOpenAI) * 100 : 0}
+              className="h-1 flex-1"
+            />
+            <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums">
               {formatN(tokens.tokens_openai)}
             </span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[11px] text-muted-foreground">ANT</span>
-            <span className="font-mono text-[11px] tabular-nums">
+          {/* Anthropic row */}
+          <div className="flex items-center gap-2">
+            <span className="w-6 shrink-0 font-mono text-[11px] text-muted-foreground">ANT</span>
+            <Progress
+              value={tokens.tokens_anthropic !== null ? (tokens.tokens_anthropic / ctxAnthropic) * 100 : 0}
+              className="h-1 flex-1"
+            />
+            <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums">
               {formatN(tokens.tokens_anthropic)}
             </span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[11px] text-muted-foreground">OR</span>
-            <span className="font-mono text-[11px] tabular-nums">
+          {/* OpenRouter row */}
+          <div className="flex items-center gap-2">
+            <span className="w-6 shrink-0 font-mono text-[11px] text-muted-foreground">OR</span>
+            <Progress
+              value={tokens.tokens_openrouter !== null ? (tokens.tokens_openrouter / ctxOpenRouter) * 100 : 0}
+              className="h-1 flex-1"
+            />
+            <span className="w-10 shrink-0 text-right font-mono text-[11px] tabular-nums">
               {formatN(tokens.tokens_openrouter)}
             </span>
           </div>

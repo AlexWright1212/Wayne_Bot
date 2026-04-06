@@ -28,7 +28,7 @@ export function ChatMessages() {
   }, [visibleMessages.length]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-5 py-6">
+    <div className="scrollbar-subtle flex-1 overflow-y-auto px-5 py-6">
       <div className="flex flex-col gap-6">
         {visibleMessages.map((message) => {
           if (message.role === "user") {

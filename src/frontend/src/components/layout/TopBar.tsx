@@ -32,9 +32,9 @@ const PROVIDER_DISPLAY: Record<Provider, string> = {
   openrouter: "OpenRouter",
 };
 
-// Compact trigger style: text-label + chevron, no bordered-input look
+// Compact trigger style: outlined secondary action — visible border + muted fill
 const TRIGGER_CLASS =
-  "h-7 border-0 bg-transparent px-1.5 text-xs text-foreground shadow-none " +
+  "h-7 border border-border bg-muted px-2 text-xs text-foreground shadow-none " +
   "hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring/50 gap-0.5";
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ export function TopBar() {
       {/* ── Left: controls ─────────────────────────────────────── */}
       <div className="flex items-center gap-1">
         <SidebarTrigger />
-        <Separator orientation="vertical" className="mx-1 h-4" />
+        <Separator orientation="vertical" className="mx-1 my-1" />
 
         {/* Provider */}
         <Select value={provider} onValueChange={(v) => setProvider(v as Provider)}>
@@ -91,7 +91,7 @@ export function TopBar() {
           </SelectContent>
         </Select>
 
-        <Separator orientation="vertical" className="h-3" />
+        <Separator orientation="vertical" className="my-1" />
 
         {/* Model */}
         <div className="flex items-center gap-0.5">
@@ -125,7 +125,7 @@ export function TopBar() {
         {/* Reasoning — shown only if configurable */}
         {hasReasoningDropdown && (
           <>
-            <Separator orientation="vertical" className="h-3" />
+            <Separator orientation="vertical" className="my-1" />
             <Select value={reasoningLevel} onValueChange={(v) => v && setReasoningLevel(v)}>
               <SelectTrigger className={TRIGGER_CLASS} size="sm">
                 <SelectValue />
@@ -146,7 +146,7 @@ export function TopBar() {
         {/* Always-on reasoning indicator (e.g. DeepSeek R1) */}
         {alwaysOn && !hasReasoningDropdown && (
           <>
-            <Separator orientation="vertical" className="h-3" />
+            <Separator orientation="vertical" className="my-1" />
             <span className="text-xs text-muted-foreground">
               Reasoning: Always On
             </span>
@@ -165,7 +165,7 @@ export function TopBar() {
         <Progress value={utilization * 100} className="w-12" />
         <span className="tabular-nums">{utilizationPct}%</span>
 
-        <Separator orientation="vertical" className="h-4" />
+        <Separator orientation="vertical" className="my-1" />
 
         <Button variant="ghost" size="icon-sm" onClick={toggleVisibility}>
           <PanelRightIcon />

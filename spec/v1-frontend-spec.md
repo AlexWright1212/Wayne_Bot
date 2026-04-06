@@ -90,7 +90,7 @@ Full-width threaded layout (Cursor-style). User messages are displayed in a chat
 
 ### User Messages
 
-Displayed in a chat bubble. Plain text content with the user's message. No additional metadata.
+Displayed as a right-aligned chat bubble. The bubble is content-width (shrinks to fit short messages) with a max-width of ~80% of the pane — long messages wrap inside the bubble, which stays anchored to the right. Text inside the bubble is left-aligned. No additional metadata.
 
 ### Assistant Messages
 

@@ -258,7 +258,7 @@ Flat/bordered with background color stepping. No drop shadows at any layer. Dept
 
 ### User Message Block
 
-The user's input in task/chat views renders as a distinct content block — not a chat bubble. It is a full-width dark box (`--muted` background, 8px radius) with comfortable padding (~px-5 py-4). The text is large (~17–18px body size) and treated as the primary "task statement," not a conversational message. Visually distinct from agent output.
+The user's input renders as a right-aligned chat bubble (`--accent` background, 8px radius, ~px-5 py-4 padding). The bubble is content-width with a max-width of ~80% of the pane — it shrinks for short messages and wraps text for long ones. Text inside the bubble is left-aligned. The bubble is large (~17–18px body size) and visually distinct from agent output.
 
 ### Tool Use Disclosures
 

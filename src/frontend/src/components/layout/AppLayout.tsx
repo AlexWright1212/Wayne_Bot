@@ -51,9 +51,9 @@ export function AppLayout() {
           {/* Visibility pane — collapses to w-0 when closed */}
           <div
             className={cn(
-              "flex flex-col overflow-hidden border-l border-border bg-card",
+              "flex flex-col overflow-hidden border-l border-border bg-panel",
               "transition-all duration-150 ease-out",
-              visibilityOpen ? "w-[400px]" : "w-0"
+              visibilityOpen ? "w-[448px]" : "w-0"
             )}
           >
             <VisibilityPane />

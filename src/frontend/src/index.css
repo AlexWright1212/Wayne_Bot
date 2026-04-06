@@ -60,11 +60,35 @@
   /* Custom tokens */
   --code: oklch(0.682 0.157 38.6);          /* #E8714A — warm orange, code references only */
   --code-foreground: oklch(1.000 0 0);
+
+  /* Visibility pane surface — one step lighter than --muted to distinguish the data panel */
+  --panel: oklch(0.241 0 0);                /* #202020 */
 }
 
 /* Syntax highlighting — override hljs background so our code block container controls it */
 .hljs {
   background: transparent !important;
+}
+
+/* Subtle native scrollbar — matches ScrollArea thumb style */
+.scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 10px;
+}
+.scrollbar-subtle::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.scrollbar-subtle::-webkit-scrollbar-button {
+  display: none;
 }
 
 body {
@@ -122,6 +146,8 @@ body {
 
   --color-code: var(--code);
   --color-code-foreground: var(--code-foreground);
+
+  --color-panel: var(--panel);
 
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
