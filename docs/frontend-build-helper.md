@@ -17,9 +17,10 @@
 - [x] Top bar
 - [x] Chat input + empty state
 - [x] Chat messages
-- [ ] Visibility pane shell
-- [ ] Visibility pane — simple tabs
-- [ ] Visibility pane — complex tabs
+- [x] Visibility pane shell
+- [x] Visibility pane — simple tabs
+- [x] Visibility pane — complex tabs
+- [ ] Minor tweaks (user-led)
 
 ### Handoff Notes (updated 2026-04-05)
 - Visibility pane: fixed 400px width, CSS `transition-all` on width toggle. No `Resizable` component — spec didn't require drag-to-resize.
