@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type { Conversation, Message } from "@/mocks/types";
-import { getConversations } from "@/lib/api";
+import {
+  getConversations,
+  createConversation,
+  updateConversation,
+  deleteConversation as apiDeleteConversation,
+} from "@/lib/api";
 
 interface ConversationStore {
   conversations: Conversation[];
@@ -14,9 +19,9 @@ interface ConversationStore {
 
   setActiveConversation: (id: string | null) => void;
   loadConversations: () => Promise<void>;
-  renameConversation: (id: string, title: string) => void;
-  deleteConversation: (id: string) => void;
-  newChat: () => void;
+  renameConversation: (id: string, title: string) => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
+  newChat: () => Promise<void>;
   /** Mock-only: add a user message and transition away from empty state. */
   addUserMessage: (convId: string, content: string) => void;
   openVisibility: (messageId: string) => void;
@@ -49,37 +54,52 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     }
   },
 
-  renameConversation: (id, title) =>
+  renameConversation: async (id, title) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    // Optimistic update
+    const prev = get().conversations;
     set((state) => ({
       conversations: state.conversations.map((c) =>
-        c.id === id ? { ...c, title: title.trim() || c.title } : c
+        c.id === id ? { ...c, title: trimmed } : c
       ),
-    })),
-
-  deleteConversation: (id) =>
-    set((state) => {
-      const remaining = state.conversations.filter((c) => c.id !== id);
-      const activeId =
-        state.activeConversationId === id
-          ? (remaining[0]?.id ?? null)
-          : state.activeConversationId;
-      return { conversations: remaining, activeConversationId: activeId };
-    }),
-
-  newChat: () => {
-    const newId = crypto.randomUUID();
-    const newConv: Conversation = {
-      id: newId,
-      title: null,
-      last_model_id: null,
-      last_provider: null,
-      updated_at: new Date().toISOString(),
-    };
-    set((state) => ({
-      conversations: [newConv, ...state.conversations],
-      activeConversationId: newId,
-      messagesByConvId: { ...state.messagesByConvId, [newId]: [] },
     }));
+    try {
+      await updateConversation(id, trimmed);
+    } catch (err) {
+      console.error("renameConversation failed", err);
+      set({ conversations: prev });
+    }
+  },
+
+  deleteConversation: async (id) => {
+    // Optimistic update
+    const prev = get();
+    const remaining = prev.conversations.filter((c) => c.id !== id);
+    const activeId =
+      prev.activeConversationId === id
+        ? (remaining[0]?.id ?? null)
+        : prev.activeConversationId;
+    set({ conversations: remaining, activeConversationId: activeId });
+    try {
+      await apiDeleteConversation(id);
+    } catch (err) {
+      console.error("deleteConversation failed", err);
+      set({ conversations: prev.conversations, activeConversationId: prev.activeConversationId });
+    }
+  },
+
+  newChat: async () => {
+    try {
+      const conv = await createConversation();
+      set((state) => ({
+        conversations: [conv, ...state.conversations],
+        activeConversationId: conv.id,
+        messagesByConvId: { ...state.messagesByConvId, [conv.id]: [] },
+      }));
+    } catch (err) {
+      console.error("newChat failed", err);
+    }
   },
 
   openVisibility: (messageId) =>
