@@ -5,6 +5,7 @@ import {
   createConversation,
   updateConversation,
   deleteConversation as apiDeleteConversation,
+  getConversation,
 } from "@/lib/api";
 
 interface ConversationStore {
@@ -12,12 +13,13 @@ interface ConversationStore {
   activeConversationId: string | null;
   messagesByConvId: Record<string, Message[]>;
   isLoadingConversations: boolean;
+  isLoadingMessages: boolean;
 
   // Visibility pane state
   visibilityOpen: boolean;
   selectedVisibilityMessageId: string | null;
 
-  setActiveConversation: (id: string | null) => void;
+  setActiveConversation: (id: string | null) => Promise<void>;
   loadConversations: () => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
@@ -34,21 +36,43 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
   activeConversationId: null,
   messagesByConvId: {},
   isLoadingConversations: false,
+  isLoadingMessages: false,
 
   visibilityOpen: false,
   selectedVisibilityMessageId: null,
 
-  setActiveConversation: (id) => set({ activeConversationId: id }),
+  setActiveConversation: async (id) => {
+    set({ activeConversationId: id });
+    if (!id) return;
+    // Skip fetch if already cached
+    if (get().messagesByConvId[id]) return;
+    set({ isLoadingMessages: true });
+    try {
+      const detail = await getConversation(id);
+      set((state) => ({
+        messagesByConvId: { ...state.messagesByConvId, [id]: detail.messages },
+        isLoadingMessages: false,
+      }));
+    } catch (err) {
+      console.error("setActiveConversation fetch failed", err);
+      set({ isLoadingMessages: false });
+    }
+  },
 
   loadConversations: async () => {
     set({ isLoadingConversations: true });
     try {
       const conversations = await getConversations();
+      const firstId = conversations[0]?.id ?? null;
       set({
         conversations,
-        activeConversationId: conversations[0]?.id ?? null,
+        activeConversationId: firstId,
         isLoadingConversations: false,
       });
+      // Eagerly load messages for the first conversation
+      if (firstId) {
+        get().setActiveConversation(firstId);
+      }
     } catch {
       set({ isLoadingConversations: false });
     }
