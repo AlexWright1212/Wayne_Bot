@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 Specs in `spec/` are core artifacts — the source of truth for intended behavior. 
 
-- **Actively Surface Spec Conflicts** - If implementation conflicts with the spec, surface it rather than silently resolving it:
+- **Actively Surface Spec Conflicts** - If implementation conflicts with the spec, surface it rather than silently resolving it.
 - **Update when decisions change** — If you discover the data model needs to change, update the spec first, then implement.
 - **Update when scope changes** — Features added or cut should be reflected in the spec.
 - **Commit the spec** — The spec belongs in version control alongside the code.
@@ -24,14 +24,14 @@ For backend and frontend architecture — request flow, provider layer, tool fra
 - `docs/` — Reference documents including architecture research and model reference
 - `src/backend/` — FastAPI backend (Python)
 - `src/frontend/` — React + Vite frontend (TypeScript)
-- `plans/` — Implementation plans (created during plan mode)
+- `plans/` — Implementation plans (created during plan mode). Out-of-scope bugs and follow-up items go in `plans/follow-up.md`.
 - `tests/` — `unit/` and `integration/` test suites
 
 ## MCP Integrations
 
 | MCP Server | Purpose |
 | **shadcn/ui** | Required for all frontend and UI work — provides registry search, component APIs, and project context. Use the `shadcn` skill. |
-| **Claude in Chrome** | Live browser access (DOM, console, network). Only use when explicitly instructed — primarily for frontend testing. |
+| **Claude in Chrome** | Live browser access (DOM, console, network). Useful for frontend testing.
 
 ## Development Commands
 
@@ -100,3 +100,12 @@ npm run preview    # Preview production build
 - **Critical:** asyncpg pools are bound to the event loop. Always create a fresh `create_async_engine` inside the `db_session` fixture (per-test scope) and dispose at the end. Module-level engines break on the 2nd test with "Event loop is closed".
 - Factories in `tests/factories.py`. HTTP mocking via `respx`.
 - Integration tests hit the real `wayne_test` PostgreSQL database — no mocking the DB layer.
+
+## Codebase Practices
+
+**Note Out-of-Scope Bugs in Seperate Follow-Up Doc** 
+
+When working on a dedicated plan/task and encounter bugs/issues that need addressing but are OUT OF SCOPE, make a note in `plans/follow-up.md`
+
+*Example:* While wiring frontend and backend together and using Chrome MCP to assess if backend API responds correctly, agent notices the "rename chat" button has a visual bug but API functions correctly -> DONT FIX NOW (out-of-scope for wiring frontend baclend) -> make a note and stay focused
+

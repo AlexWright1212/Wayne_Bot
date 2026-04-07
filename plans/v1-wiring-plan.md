@@ -34,14 +34,14 @@ The frontend and backend are both built but disconnected. The frontend runs enti
 ---
 
 ### Checkpoint: Backend Smoke Tests
-- [ ] `poetry run pytest tests/integration/test_api_wiring.py` — all 9 tests pass
-- [ ] Fix any backend bugs found before proceeding
+- [x] `poetry run pytest tests/integration/test_api_wiring.py` — all 9 tests pass
+- [x] Fix any backend bugs found before proceeding
 
 ---
 
 ### Phase 2: API Client Foundation
 
-#### Task 2: Create `src/frontend/src/lib/api.ts`
+#### ~~Task 2: Create `src/frontend/src/lib/api.ts`~~ ✓
 **Description:** Typed fetch wrappers for all REST endpoints + a `createWebSocket(conversationId)` factory. Use a `BASE_URL` constant (`http://localhost:8000`). Each function throws a typed `ApiError` on non-2xx. Return types must match the interfaces in `mocks/types.ts`.
 
 Functions:
@@ -68,7 +68,7 @@ createWebSocket(conversationId: string) → WebSocket
 
 ### Phase 3: Model Store Wiring
 
-#### Task 3: Replace mock catalog with live `GET /api/models`
+#### ~~Task 3: Replace mock catalog with live `GET /api/models`~~ ✓
 **Description:** Initialize `catalog` as empty rather than `MOCK_MODEL_CATALOG`. Add `loadCatalog()` async action that calls `api.getModels()` and calls `setCatalog()`. Call `loadCatalog()` on app mount. Model selects should show a disabled/loading state while catalog is empty.
 
 **Dependencies:** Task 2
@@ -83,7 +83,7 @@ createWebSocket(conversationId: string) → WebSocket
 
 ### Phase 4: Conversation List Wiring
 
-#### Task 4: Replace mock conversations with live `GET /api/conversations`
+#### ~~Task 4: Replace mock conversations with live `GET /api/conversations`~~ ✓
 **Description:** Initialize `conversations` as `[]` and `activeConversationId` as `null`. Add `loadConversations()` async action. Call on app mount. After loading, set first conversation as active if any exist.
 
 **Dependencies:** Task 2
@@ -94,7 +94,7 @@ createWebSocket(conversationId: string) → WebSocket
 
 **Estimated scope:** Small
 
-#### Task 5: Wire conversation CRUD (create, rename, delete)
+#### ~~Task 5: Wire conversation CRUD (create, rename, delete)~~
 **Description:** Update the three store actions to call the backend:
 - `newChat()`: call `api.createConversation()`, use returned server ID (not random UUID), prepend to list, set active.
 - `renameConversation(id, title)`: call `api.updateConversation()`, update local state on success.
@@ -109,7 +109,7 @@ On API error: show a toast and revert any optimistic update.
 
 **Estimated scope:** Small
 
-#### Task 6: Load message history on conversation select
+#### ~~Task 6: Load message history on conversation select~~ ✓
 **Description:** When `setActiveConversation(id)` is called, fetch `api.getConversation(id)` and populate `messagesByConvId[id]`. Add `isLoadingMessages: boolean` to the store. `ChatMessages.tsx` shows a skeleton when loading. Skip fetch if messages already cached.
 
 **Dependencies:** Task 4
@@ -122,11 +122,11 @@ On API error: show a toast and revert any optimistic update.
 
 ---
 
-### Checkpoint: Conversation CRUD
-- [ ] App loads showing real conversations from the database
-- [ ] New Chat creates a real conversation (visible after reload)
-- [ ] Rename and Delete persist (visible after reload)
-- [ ] Clicking a conversation loads its real message history
+### Checkpoint: Conversation CRUD ✓
+- [x] App loads showing real conversations from the database
+- [x] New Chat creates a real conversation (visible after reload)
+- [x] Rename and Delete persist (visible after reload)
+- [x] Clicking a conversation loads its real message history
 
 ---
 
