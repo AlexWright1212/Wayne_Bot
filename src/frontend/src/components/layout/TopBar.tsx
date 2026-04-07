@@ -42,6 +42,7 @@ const TRIGGER_CLASS =
 export function TopBar() {
   const toggleVisibility = useConversationStore((s) => s.toggleVisibility);
   const catalog = useModelStore((s) => s.catalog);
+  const isLoadingCatalog = useModelStore((s) => s.isLoadingCatalog);
   const provider = useModelStore((s) => s.provider);
   const modelId = useModelStore((s) => s.modelId);
   const reasoningLevel = useModelStore((s) => s.reasoningLevel);
@@ -72,7 +73,7 @@ export function TopBar() {
         <Separator orientation="vertical" className="mx-1 my-1" />
 
         {/* Provider */}
-        <Select value={provider} onValueChange={(v) => setProvider(v as Provider)}>
+        <Select value={provider} onValueChange={(v) => setProvider(v as Provider)} disabled={isLoadingCatalog}>
           <SelectTrigger className={TRIGGER_CLASS} size="sm">
             <SelectValue />
           </SelectTrigger>
@@ -95,7 +96,7 @@ export function TopBar() {
 
         {/* Model */}
         <div className="flex items-center gap-0.5">
-          <Select value={modelId} onValueChange={(v) => v && setModelId(v)}>
+          <Select value={modelId} onValueChange={(v) => v && setModelId(v)} disabled={isLoadingCatalog}>
             <SelectTrigger className={TRIGGER_CLASS} size="sm">
               <SelectValue />
             </SelectTrigger>

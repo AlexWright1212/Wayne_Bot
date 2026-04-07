@@ -1,31 +1,49 @@
 import { create } from "zustand";
 import type { ModelCatalog, Provider } from "@/mocks/types";
-import { MOCK_MODEL_CATALOG } from "@/mocks/data";
+import { getModels } from "@/lib/api";
+
+const EMPTY_CATALOG: ModelCatalog = { providers: {} as ModelCatalog["providers"] };
 
 interface ModelStore {
   catalog: ModelCatalog;
+  isLoadingCatalog: boolean;
   provider: Provider;
   modelId: string;
   reasoningLevel: string;
 
   /** Replace the catalog (called on real API response). */
   setCatalog: (catalog: ModelCatalog) => void;
+  loadCatalog: () => Promise<void>;
   setProvider: (p: Provider) => void;
   setModelId: (id: string) => void;
   setReasoningLevel: (level: string) => void;
 }
 
-const _defaultProvider: Provider = "openai";
-const _defaultModel = MOCK_MODEL_CATALOG.providers.openai.models[0];
-const _defaultReasoning = (_defaultModel.reasoning_levels[0] as string) ?? "";
-
 export const useModelStore = create<ModelStore>((set) => ({
-  catalog: MOCK_MODEL_CATALOG,
-  provider: _defaultProvider,
-  modelId: _defaultModel.id,
-  reasoningLevel: _defaultReasoning,
+  catalog: EMPTY_CATALOG,
+  isLoadingCatalog: false,
+  provider: "openai",
+  modelId: "",
+  reasoningLevel: "",
 
   setCatalog: (catalog) => set({ catalog }),
+
+  loadCatalog: async () => {
+    set({ isLoadingCatalog: true });
+    try {
+      const catalog = await getModels();
+      const firstProvider = Object.keys(catalog.providers)[0] as Provider | undefined;
+      const firstModel = firstProvider ? catalog.providers[firstProvider]?.models[0] : undefined;
+      set({
+        catalog,
+        provider: firstProvider ?? "openai",
+        modelId: firstModel?.id ?? "",
+        reasoningLevel: (firstModel?.reasoning_levels[0] as string) ?? "",
+      });
+    } finally {
+      set({ isLoadingCatalog: false });
+    }
+  },
 
   setProvider: (p) =>
     set((state) => {

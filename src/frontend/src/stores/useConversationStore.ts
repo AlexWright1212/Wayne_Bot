@@ -1,21 +1,19 @@
 import { create } from "zustand";
 import type { Conversation, Message } from "@/mocks/types";
-import {
-  MOCK_CONVERSATIONS,
-  MOCK_ACTIVE_CONVERSATION_ID,
-  MOCK_MESSAGES_BY_CONV,
-} from "@/mocks/data";
+import { getConversations } from "@/lib/api";
 
 interface ConversationStore {
   conversations: Conversation[];
   activeConversationId: string | null;
   messagesByConvId: Record<string, Message[]>;
+  isLoadingConversations: boolean;
 
   // Visibility pane state
   visibilityOpen: boolean;
   selectedVisibilityMessageId: string | null;
 
   setActiveConversation: (id: string | null) => void;
+  loadConversations: () => Promise<void>;
   renameConversation: (id: string, title: string) => void;
   deleteConversation: (id: string) => void;
   newChat: () => void;
@@ -27,14 +25,29 @@ interface ConversationStore {
 }
 
 export const useConversationStore = create<ConversationStore>((set, get) => ({
-  conversations: MOCK_CONVERSATIONS,
-  activeConversationId: MOCK_ACTIVE_CONVERSATION_ID,
-  messagesByConvId: MOCK_MESSAGES_BY_CONV,
+  conversations: [],
+  activeConversationId: null,
+  messagesByConvId: {},
+  isLoadingConversations: false,
 
   visibilityOpen: false,
   selectedVisibilityMessageId: null,
 
   setActiveConversation: (id) => set({ activeConversationId: id }),
+
+  loadConversations: async () => {
+    set({ isLoadingConversations: true });
+    try {
+      const conversations = await getConversations();
+      set({
+        conversations,
+        activeConversationId: conversations[0]?.id ?? null,
+        isLoadingConversations: false,
+      });
+    } catch {
+      set({ isLoadingConversations: false });
+    }
+  },
 
   renameConversation: (id, title) =>
     set((state) => ({
