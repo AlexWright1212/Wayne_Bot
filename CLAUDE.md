@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+## Spec-Driven Development
+
+Specs in `spec/` are core artifacts — the source of truth for intended behavior. 
+
+- **Actively Surface Spec Conflicts** - If implementation conflicts with the spec, surface it rather than silently resolving it:
+- **Update when decisions change** — If you discover the data model needs to change, update the spec first, then implement.
+- **Update when scope changes** — Features added or cut should be reflected in the spec.
+- **Commit the spec** — The spec belongs in version control alongside the code.
+- **Reference the spec in PRs** — Link back to the spec section that each PR implements.
+
 ## References
 
 When working with anything related to *specific* LLM models (model names, model IDs, API parameters, pricing, reasoning controls), you MUST consult `docs/refernces/llm_models_reference.md` before using model information from your training data. Your training data likely contains outdated model names and info.
@@ -17,21 +27,11 @@ For backend and frontend architecture — request flow, provider layer, tool fra
 - `plans/` — Implementation plans (created during plan mode)
 - `tests/` — `unit/` and `integration/` test suites
 
-## Spec-Driven Development
+## MCP Integrations
 
-Specs in `spec/` are core artifacts — the source of truth for intended behavior. If implementation conflicts with the spec, surface it rather than silently resolving it:
-
-```
-SPEC CONFLICT:
-Spec says X, but [existing code / your plan] does Y.
-
-Options:
-A) Follow the spec — [implication]
-B) Follow the code — update the spec to match
-C) Unsure — needs your call
-
-→ Which approach?
-```
+| MCP Server | Purpose |
+| **shadcn/ui** | Required for all frontend and UI work — provides registry search, component APIs, and project context. Use the `shadcn` skill. |
+| **Claude in Chrome** | Live browser access (DOM, console, network). Only use when explicitly instructed — primarily for frontend testing. |
 
 ## Development Commands
 
@@ -93,12 +93,6 @@ npm run preview    # Preview production build
 - **Tailwind v4** + **shadcn/ui** (style: `base-nova`, Radix primitives)
 - **Zustand** — state management
 - **react-markdown** + **remark-gfm** + **rehype-highlight** — markdown rendering
-
-## MCP Integrations
-
-| MCP Server | Purpose |
-| **shadcn/ui** | Required for all frontend and UI work — provides registry search, component APIs, and project context. Use the `shadcn` skill. |
-| **Claude in Chrome** | Live browser access (DOM, console, network). Only use when explicitly instructed — primarily for frontend testing. |
 
 ## Testing Patterns
 
